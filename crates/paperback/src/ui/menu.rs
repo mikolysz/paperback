@@ -63,6 +63,9 @@ const DOCUMENT_DEPENDENT_IDS: &[i32] = &[
 	// Tables
 	menu_ids::PREVIOUS_TABLE,
 	menu_ids::NEXT_TABLE,
+	// Formulas
+	menu_ids::PREVIOUS_MATH,
+	menu_ids::NEXT_MATH,
 	// Separators
 	menu_ids::PREVIOUS_SEPARATOR,
 	menu_ids::NEXT_SEPARATOR,
@@ -209,6 +212,14 @@ pub fn tables_entries() -> Vec<MenuEntry> {
 	// TRANSLATORS: Menu item label to go to the next table
 	let next_table_label = t("Next &Table\tT");
 	vec![item(menu_ids::PREVIOUS_TABLE, prev_table_label), item(menu_ids::NEXT_TABLE, next_table_label)]
+}
+
+pub fn maths_entries() -> Vec<MenuEntry> {
+	// TRANSLATORS: Menu item label to go to the previous formula
+	let prev_math_label = t("Previous For&mula\tShift+M");
+	// TRANSLATORS: Menu item label to go to the next formula
+	let next_math_label = t("Next For&mula\tM");
+	vec![item(menu_ids::PREVIOUS_MATH, prev_math_label), item(menu_ids::NEXT_MATH, next_math_label)]
 }
 
 pub fn separators_entries() -> Vec<MenuEntry> {
@@ -417,6 +428,16 @@ pub fn create_tables_submenu() -> Menu {
 
 pub fn append_tables_items(menu: &Menu) {
 	let entries = tables_entries();
+	append_menu_entries(menu, &entries);
+}
+
+pub fn create_maths_submenu() -> Menu {
+	let entries = maths_entries();
+	build_menu(&entries)
+}
+
+pub fn append_maths_items(menu: &Menu) {
+	let entries = maths_entries();
 	append_menu_entries(menu, &entries);
 }
 
@@ -680,6 +701,11 @@ pub fn create_go_menu(compact: bool) -> Menu {
 		// TRANSLATORS: Status bar help text for the "Tables" submenu
 		let tables_help = t("Navigate by tables");
 		menu.append_submenu(create_tables_submenu(), &tables_label, &tables_help);
+		// TRANSLATORS: Submenu label containing formula navigation commands
+		let maths_label = t("For&mulas");
+		// TRANSLATORS: Status bar help text for the "Formulas" submenu
+		let maths_help = t("Navigate by formulas");
+		menu.append_submenu(create_maths_submenu(), &maths_label, &maths_help);
 		// TRANSLATORS: Submenu label containing separator-element navigation commands
 		let separators_label = t("&Separators");
 		// TRANSLATORS: Status bar help text for the "Separators" submenu
@@ -711,6 +737,8 @@ pub fn create_go_menu(compact: bool) -> Menu {
 		append_figures_items(&menu);
 		menu.append_separator();
 		append_tables_items(&menu);
+		menu.append_separator();
+		append_maths_items(&menu);
 		menu.append_separator();
 		append_separators_items(&menu);
 		menu.append_separator();

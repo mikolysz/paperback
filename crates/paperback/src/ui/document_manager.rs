@@ -417,6 +417,17 @@ impl DocumentManager {
 		})
 	}
 
+	pub fn activate_current_math(&self) -> Option<String> {
+		self.active_tab().and_then(|tab| {
+			let pos = tab.text_ctrl.get_insertion_point();
+			tab.session.get_math_at_position(pos).map(|mathml| {
+				format!(
+					"<style>math {{ font-size: 2.5em; }} body {{ display: flex; justify-content: center; margin-top: 2em; }}</style>{mathml}"
+				)
+			})
+		})
+	}
+
 	pub fn update_status_bar(&self) {
 		let sleep_start = SLEEP_TIMER_START_MS.load(Ordering::SeqCst);
 		let sleep_duration = SLEEP_TIMER_DURATION_MINUTES.load(Ordering::SeqCst);
@@ -689,13 +700,22 @@ impl DocumentManager {
 			if let WindowEventData::Keyboard(kbd) = event {
 				if kbd.get_key_code() == Some(13) || kbd.get_key_code() == Some(32) {
 					// 13 is KEY_RETURN, 32 is space
-					let table_html = {
+					// Math is checked before table: a formula's span is narrower, so when the
+					// caret is on one the formula is what the user means to activate.
+					// The lock is dropped before the dialog opens: its modal event loop runs
+					// handlers that lock the document manager themselves.
+					let dialog = {
 						let dm = dm_for_enter.lock().unwrap();
-						dm.activate_current_table()
+						dm.activate_current_math()
+							.map(|html| {
+								// TRANSLATORS: Title of the dialog that displays a formula as MathML
+								(t("Formula View"), html)
+							})
+							.or_else(|| dm.activate_current_table().map(|html| (t("Table View"), html)))
+							.map(|(title, html)| (dm.frame, title, html))
 					};
-					if let Some(html) = table_html {
-						let frame = dm_for_enter.lock().unwrap().frame;
-						super::dialogs::show_web_view_dialog(&frame, &t("Table View"), &html, false, None);
+					if let Some((frame, title, html)) = dialog {
+						super::dialogs::show_web_view_dialog(&frame, &title, &html, false, None);
 					} else {
 						let mut dm = dm_for_enter.lock().unwrap();
 						dm.activate_current_link();
@@ -1334,6 +1354,7 @@ fn build_navigation_key_map() -> HashMap<(i32, bool), i32> {
 		menu::pages_entries(),
 		menu::links_entries(),
 		menu::tables_entries(),
+		menu::maths_entries(),
 		menu::separators_entries(),
 		menu::lists_entries(),
 		menu::containers_entries(),

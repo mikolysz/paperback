@@ -1045,6 +1045,12 @@ impl MainWindow {
 				menu_ids::NEXT_TABLE => {
 					navigation::handle_marker_navigation(&dm, &config, live_region_label, MarkerNavTarget::Table, true);
 				}
+				menu_ids::PREVIOUS_MATH => {
+					navigation::handle_marker_navigation(&dm, &config, live_region_label, MarkerNavTarget::Math, false);
+				}
+				menu_ids::NEXT_MATH => {
+					navigation::handle_marker_navigation(&dm, &config, live_region_label, MarkerNavTarget::Math, true);
+				}
 				menu_ids::PREVIOUS_SEPARATOR => {
 					navigation::handle_marker_navigation(
 						&dm,

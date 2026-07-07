@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: paperback 0.8.5\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-12 17:50-0600\n"
+"POT-Creation-Date: 2026-07-22 02:08+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -609,6 +609,10 @@ msgstr ""
 msgid "Ready"
 msgstr ""
 
+#. TRANSLATORS: Title of the dialog that displays a formula as MathML
+msgid "Formula View"
+msgstr ""
+
 msgid "Table View"
 msgstr ""
 
@@ -879,6 +883,14 @@ msgstr ""
 
 #. TRANSLATORS: Menu item label to go to the next table
 msgid "Next &Table\tT"
+msgstr ""
+
+#. TRANSLATORS: Menu item label to go to the previous formula
+msgid "Previous For&mula\tShift+M"
+msgstr ""
+
+#. TRANSLATORS: Menu item label to go to the next formula
+msgid "Next For&mula\tM"
 msgstr ""
 
 #. TRANSLATORS: Menu item label to go to the previous separator element
@@ -1284,6 +1296,14 @@ msgstr ""
 msgid "Navigate by tables"
 msgstr ""
 
+#. TRANSLATORS: Submenu label containing formula navigation commands
+msgid "For&mulas"
+msgstr ""
+
+#. TRANSLATORS: Status bar help text for the "Formulas" submenu
+msgid "Navigate by formulas"
+msgstr ""
+
 #. TRANSLATORS: Submenu label containing separator-element navigation commands
 msgid "&Separators"
 msgstr ""
@@ -1559,6 +1579,18 @@ msgid "No next table."
 msgstr ""
 
 msgid "No previous table."
+msgstr ""
+
+#. TRANSLATORS: Announcement when formula navigation is unavailable because the document has no formulas
+msgid "No formulas."
+msgstr ""
+
+#. TRANSLATORS: Announcement when there is no next formula to navigate to
+msgid "No next formula."
+msgstr ""
+
+#. TRANSLATORS: Announcement when there is no previous formula to navigate to
+msgid "No previous formula."
 msgstr ""
 
 msgid "No separators."

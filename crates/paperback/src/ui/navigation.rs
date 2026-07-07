@@ -13,6 +13,7 @@ pub enum MarkerNavTarget {
 	Heading(i32),
 	Link,
 	Table,
+	Math,
 	Separator,
 	List,
 	ListItem,
@@ -94,6 +95,16 @@ fn nav_announcements(target: MarkerNavTarget, level_filter: i32) -> NavAnnouncem
 			not_supported: t("No tables."),
 			not_found_next: t("No next table."),
 			not_found_prev: t("No previous table."),
+			format: NavFoundFormat::TextOnly,
+		},
+		MarkerNavTarget::Math => NavAnnouncements {
+			// TRANSLATORS: Announcement when formula navigation is unavailable because the document has no formulas
+			not_supported: t("No formulas."),
+			// TRANSLATORS: Announcement when there is no next formula to navigate to
+			not_found_next: t("No next formula."),
+			// TRANSLATORS: Announcement when there is no previous formula to navigate to
+			not_found_prev: t("No previous formula."),
+			// The marker text is the formula's spoken rendering, so announce it as-is.
 			format: NavFoundFormat::TextOnly,
 		},
 		MarkerNavTarget::Separator => NavAnnouncements {
@@ -258,6 +269,7 @@ pub fn handle_marker_navigation(
 			MarkerNavTarget::Heading(level) => tab.session.navigate_heading(current_pos, wrap, next, level),
 			MarkerNavTarget::Link => tab.session.navigate_link(current_pos, wrap, next),
 			MarkerNavTarget::Table => tab.session.navigate_table(current_pos, wrap, next),
+			MarkerNavTarget::Math => tab.session.navigate_math(current_pos, wrap, next),
 			MarkerNavTarget::Separator => tab.session.navigate_separator(current_pos, wrap, next),
 			MarkerNavTarget::List => tab.session.navigate_list(current_pos, wrap, next),
 			MarkerNavTarget::ListItem => tab.session.navigate_list_item(current_pos, wrap, next),
