@@ -137,6 +137,7 @@ pub enum SegmentTypeFfi {
 	Separator,
 	Image,
 	Figure,
+	Math,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -217,6 +218,7 @@ pub enum MarkerTypeFfi {
 	Bold,
 	Italic,
 	Underline,
+	Math,
 }
 
 impl From<MarkerType> for MarkerTypeFfi {
@@ -241,6 +243,7 @@ impl From<MarkerType> for MarkerTypeFfi {
 			MarkerType::Bold => Self::Bold,
 			MarkerType::Italic => Self::Italic,
 			MarkerType::Underline => Self::Underline,
+			MarkerType::Math => Self::Math,
 		}
 	}
 }
@@ -504,6 +507,18 @@ impl DocumentSession {
 		let is_supported = self.has_marker(MarkerType::Table);
 		self.navigate_with_post(
 			NavigateParams { position, wrap, next, target: NavTarget::Table, level_filter: 0 },
+			is_supported,
+			|s, nav_result| {
+				s.fill_marker_text_if_empty(nav_result);
+			},
+		)
+	}
+
+	#[must_use]
+	pub fn navigate_math(&self, position: i64, wrap: bool, next: bool) -> NavigationResult {
+		let is_supported = self.has_marker(MarkerType::Math);
+		self.navigate_with_post(
+			NavigateParams { position, wrap, next, target: NavTarget::Math, level_filter: 0 },
 			is_supported,
 			|s, nav_result| {
 				s.fill_marker_text_if_empty(nav_result);
@@ -855,6 +870,10 @@ impl DocumentSession {
 			supported.push(SegmentTypeFfi::Figure);
 		}
 
+		if self.has_marker(MarkerType::Math) {
+			supported.push(SegmentTypeFfi::Math);
+		}
+
 		supported
 	}
 
@@ -904,20 +923,25 @@ impl DocumentSession {
 		self.page_offset(page)
 	}
 
-	#[must_use]
-	pub fn get_table_at_position(&self, position: i64) -> Option<String> {
+	/// Reference of the `mtype` marker whose display extent contains `position`.
+	fn marker_reference_at(&self, position: i64, mtype: MarkerType) -> Option<String> {
 		let pos_usize = usize::try_from(position.max(0)).unwrap_or(0);
-		let table_index = self.handle.current_marker_index(pos_usize, MarkerType::Table)?;
-		let marker = self.handle.document().buffer.markers.get(table_index)?;
-		// `length` is the display extent (Tasks 2-3); valid range is the half-open `[position, end)`.
-		let table_end = marker.position + marker.length;
-		if pos_usize < marker.position || pos_usize >= table_end {
-			return None;
-		}
-		if marker.reference.is_empty() {
+		let index = self.handle.current_marker_index(pos_usize, mtype)?;
+		let marker = self.handle.document().buffer.markers.get(index)?;
+		if pos_usize >= marker.position + marker.length {
 			return None;
 		}
 		Some(marker.reference.clone())
+	}
+
+	#[must_use]
+	pub fn get_table_at_position(&self, position: i64) -> Option<String> {
+		self.marker_reference_at(position, MarkerType::Table)
+	}
+
+	#[must_use]
+	pub fn get_math_at_position(&self, position: i64) -> Option<String> {
+		self.marker_reference_at(position, MarkerType::Math)
 	}
 
 	#[must_use]
@@ -1119,6 +1143,7 @@ impl DocumentSession {
 			SegmentTypeFfi::Separator => Some(NavTarget::Separator),
 			SegmentTypeFfi::Image => Some(NavTarget::Image),
 			SegmentTypeFfi::Figure => Some(NavTarget::Figure),
+			SegmentTypeFfi::Math => Some(NavTarget::Math),
 			_ => None,
 		};
 
@@ -1926,6 +1951,74 @@ mod tests {
 		assert_eq!(session.get_table_at_position(10).as_deref(), Some("<table><tr><td>a</td><td>b</td></tr></table>"));
 		assert!(session.get_table_at_position(11).is_none());
 		assert!(session.get_table_at_position(2).is_none());
+	}
+
+	/// Builds a session whose buffer contains a Math marker spanning a display range, used to
+	/// exercise `get_math_at_position` and math navigation.
+	fn math_session() -> DocumentSession {
+		// Layout (display units): "before\n" (0..7), math span "x is 1" (7..13), " after" (13..19).
+		let mathml = "<math><mi>x</mi><mo>=</mo><mn>1</mn></math>";
+		let mut buffer = DocumentBuffer::with_content("before\nx is 1 after".to_string());
+		buffer.add_marker(
+			Marker::new(MarkerType::Math, 7)
+				.with_length(6)
+				.with_text("x is 1".to_string())
+				.with_reference(mathml.to_string()),
+		);
+		let mut doc = Document::new();
+		doc.set_buffer(buffer);
+		doc.compute_stats();
+		DocumentSession {
+			handle: DocumentHandle::new(doc),
+			file_path: "book.epub".to_string(),
+			history: Vec::new(),
+			history_index: 0,
+			parser_flags: ParserFlags::NONE,
+			last_stable_position: None,
+		}
+	}
+
+	#[test]
+	fn get_math_at_position_uses_display_length() {
+		let session = math_session();
+		// Math marker at display position 7 with length 6 -> half-open range [7, 13).
+		assert_eq!(session.get_math_at_position(7).as_deref(), Some("<math><mi>x</mi><mo>=</mo><mn>1</mn></math>"));
+		assert_eq!(session.get_math_at_position(12).as_deref(), Some("<math><mi>x</mi><mo>=</mo><mn>1</mn></math>"));
+		assert!(session.get_math_at_position(13).is_none());
+		assert!(session.get_math_at_position(2).is_none());
+	}
+
+	#[test]
+	fn navigate_math_finds_marker() {
+		let session = math_session();
+		let result = session.navigate_math(0, false, true);
+		assert!(result.found);
+		assert_eq!(result.offset, 7);
+		assert_eq!(result.marker_text, "x is 1");
+		let none_before = session.navigate_math(0, false, false);
+		assert!(!none_before.found);
+	}
+
+	#[test]
+	fn navigate_math_is_not_supported_without_math_markers() {
+		let session = sample_session(ParserFlags::NONE);
+		assert!(session.navigate_math(0, false, true).not_supported);
+	}
+
+	#[test]
+	fn supported_segment_types_include_math_only_when_present() {
+		let with_math = math_session();
+		assert!(with_math.get_supported_segment_types_ffi().iter().any(|t| matches!(t, SegmentTypeFfi::Math)));
+		let without_math = sample_session(ParserFlags::NONE);
+		assert!(!without_math.get_supported_segment_types_ffi().iter().any(|t| matches!(t, SegmentTypeFfi::Math)));
+	}
+
+	#[test]
+	fn get_text_segment_navigates_math() {
+		let session = math_session();
+		let segment = session.get_text_segment(0, SegmentTypeFfi::Math, SegmentDirectionFfi::Next);
+		assert_eq!(segment.start_pos, 7);
+		assert_eq!(segment.text, "x is 1");
 	}
 
 	#[test]

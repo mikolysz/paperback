@@ -17,7 +17,7 @@ enum MarkerTypeFfi {
 	"Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6",
 	"PageBreak", "SectionBreak", "TocItem", "Link",
 	"List", "ListItem", "Table", "Separator", "Image", "Figure",
-	"Bold", "Italic", "Underline"
+	"Bold", "Italic", "Underline", "Math"
 };
 
 dictionary LineMarker {
@@ -44,7 +44,7 @@ enum SegmentTypeFfi {
 	"Paragraph", "Line",
 	"Heading", "Link", "Section", "Page",
 	"List", "ListItem", "Table", "Separator",
-	"Image", "Figure"
+	"Image", "Figure", "Math"
 };
 
 enum SegmentDirectionFfi {

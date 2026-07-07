@@ -29,6 +29,7 @@ pub enum MarkerType {
 	Bold = 16,
 	Italic = 17,
 	Underline = 18,
+	Math = 19,
 }
 
 impl From<MarkerType> for i32 {
@@ -70,6 +71,7 @@ impl TryFrom<i32> for MarkerType {
 			16 => Ok(Self::Bold),
 			17 => Ok(Self::Italic),
 			18 => Ok(Self::Underline),
+			19 => Ok(Self::Math),
 			_ => Err(()),
 		}
 	}
@@ -651,11 +653,11 @@ mod tests {
 
 	#[test]
 	fn marker_type_round_trip_for_all_known_values() {
-		for raw in 0..=18 {
+		for raw in 0..=19 {
 			let marker = MarkerType::try_from(raw).unwrap();
 			assert_eq!(i32::from(marker), raw);
 		}
-		assert!(MarkerType::try_from(19).is_err());
+		assert!(MarkerType::try_from(20).is_err());
 		assert!(MarkerType::try_from(-1).is_err());
 	}
 
