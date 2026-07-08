@@ -203,6 +203,8 @@ id="toc-supported-languages">Supported languages</a></li>
 </ul></li>
 <li><a href="#changelog" id="toc-changelog">Changelog</a>
 <ul>
+<li><a href="#version-0.9.0" id="toc-version-0.9.0">Version
+0.9.0</a></li>
 <li><a href="#version-0.8.5" id="toc-version-0.8.5">Version
 0.8.5</a></li>
 <li><a href="#version-0.8.2" id="toc-version-0.8.2">Version
@@ -240,8 +242,7 @@ reader for everyone, from casual readers to heavy power users. It’s
 designed for screen reader accessibility, fast speeds, and a bloat-free
 experience.</p>
 <h1 id="system-requirements">System Requirements</h1>
-<p>Paperback currently runs on Windows 10/11 and Linux. Support for
-macOS is in the pipeline.</p>
+<p>Paperback currently runs on Windows, macOS, iOS, and Android.</p>
 <h1 id="features">Features</h1>
 <ul>
 <li>Completely standalone, not requiring any software to be installed on
@@ -283,6 +284,7 @@ types</h1>
 <p>Paperback supports the following formats and extensions:</p>
 <ul>
 <li>CHM help files (<code>.chm</code>)</li>
+<li>DAISY books (<code>.opf</code>, <code>.zip</code>)</li>
 <li>EPUB books (<code>.epub</code>)</li>
 <li>FB2 ebooks (<code>.fb2</code>)</li>
 <li>HTML documents (<code>.htm</code>, <code>.html</code>,
@@ -291,40 +293,54 @@ types</h1>
 <code>.mdx</code>, <code>.mdown</code>, <code>.mdwn</code>,
 <code>.mkd</code>, <code>.mkdn</code>, <code>.mkdown</code>,
 <code>.ronn</code>)</li>
-<li>Microsoft Word documents (<code>.docx</code>,
-<code>.docm</code>)</li>
+<li>Microsoft Word documents (<code>.docx</code>, <code>.docm</code>,
+<code>.doc</code>)</li>
+<li>MOBI/Kindle books (<code>.mobi</code>, <code>.azw</code>,
+<code>.azw3</code>)</li>
 <li>OpenDocument presentations (<code>.odp</code>,
 <code>.fodp</code>)</li>
 <li>OpenDocument text files (<code>.odt</code>, <code>.fodt</code>)</li>
 <li>PDF documents (<code>.pdf</code>)</li>
-<li>PowerPoint presentations (<code>.pptx</code>,
-<code>.pptm</code>)</li>
+<li>PowerPoint presentations (<code>.pptx</code>, <code>.pptm</code>,
+<code>.ppt</code>)</li>
 <li>RTF documents (<code>.rtf</code>)</li>
 <li>Plain text and log files (<code>.txt</code>, <code>.log</code>)</li>
-<li>XML documents (<code>.xml</code>)</li>
 </ul>
 <h1 id="keyboard-shortcuts">Keyboard shortcuts</h1>
 <p>Paperback is designed for keyboard-first and screen reader-first use.
 Here are the current shortcuts.</p>
+<p>Shortcuts below are for Windows. Where macOS differs, the equivalent
+is noted in parentheses — mainly because Ctrl+G, Ctrl+W, and
+Alt+Left/Right are already claimed by other system or app conventions on
+that platform.</p>
 <h2 id="file-menu">File menu</h2>
 <ul>
 <li><code>Ctrl+O</code>: Open a document.</li>
-<li><code>Ctrl+F4</code>: Close the current document.</li>
-<li><code>Ctrl+Shift+F4</code>: Close all open documents.</li>
+<li><code>Ctrl+F4</code> (macOS: <code>Cmd+W</code>): Close the current
+document.</li>
+<li><code>Ctrl+Shift+F4</code> (macOS: <code>Cmd+Shift+W</code>): Close
+all open documents.</li>
+<li><code>Ctrl+Shift+T</code>: Reopen the last closed document.</li>
 <li><code>Ctrl+R</code>: Show the “All Documents” dialog (from Recent
 Documents).</li>
+<li><code>Ctrl+Q</code>: Exit (Windows only; on macOS this is under the
+app menu instead).</li>
 </ul>
 <h2 id="go-menu">Go menu</h2>
 <ul>
 <li><code>Ctrl+F</code>: Show the Find dialog.</li>
-<li><code>F3</code>: Find next.</li>
-<li><code>Shift+F3</code>: Find previous.</li>
-<li><code>Ctrl+G</code>: Go to line.</li>
-<li><code>Ctrl+Shift+G</code>: Go to percent.</li>
+<li><code>F3</code> (macOS: <code>Cmd+G</code>): Find next.</li>
+<li><code>Shift+F3</code> (macOS: <code>Cmd+Shift+G</code>): Find
+previous.</li>
+<li><code>Ctrl+G</code> (macOS: <code>Cmd+L</code>): Go to line.</li>
+<li><code>Ctrl+Shift+G</code> (macOS: <code>Cmd+Shift+L</code>): Go to
+percent.</li>
 <li><code>Ctrl+P</code>: Go to page (when supported by the current
 document).</li>
-<li><code>Alt+Left</code>: Go back in navigation history.</li>
-<li><code>Alt+Right</code>: Go forward in navigation history.</li>
+<li><code>Alt+Left</code> (macOS: <code>Cmd+[</code>): Go back in
+navigation history.</li>
+<li><code>Alt+Right</code> (macOS: <code>Cmd+]</code>): Go forward in
+navigation history.</li>
 <li><code>[</code>: Previous section.</li>
 <li><code>]</code>: Next section.</li>
 <li><code>Shift+H</code>: Previous heading.</li>
@@ -342,10 +358,15 @@ at level 1-6.</li>
 <li><code>Ctrl+B</code>: Jump to all bookmarks and notes.</li>
 <li><code>Ctrl+Alt+B</code>: Jump to bookmarks only.</li>
 <li><code>Ctrl+Alt+M</code>: Jump to notes only.</li>
-<li><code>Ctrl+Shift+W</code>: View note text at the current
-position.</li>
+<li><code>Ctrl+Shift+W</code> (macOS: <code>RawCtrl+Shift+W</code>,
+i.e. the physical Control key rather than Cmd): View note text at the
+current position.</li>
 <li><code>Shift+K</code>: Previous link.</li>
 <li><code>K</code>: Next link.</li>
+<li><code>Shift+G</code>: Previous image.</li>
+<li><code>G</code>: Next image.</li>
+<li><code>Shift+F</code>: Previous figure.</li>
+<li><code>F</code>: Next figure.</li>
 <li><code>Shift+T</code>: Previous table.</li>
 <li><code>T</code>: Next table.</li>
 <li><code>Shift+S</code>: Previous separator.</li>
@@ -361,7 +382,9 @@ table).</li>
 </ul>
 <h2 id="tools-menu">Tools menu</h2>
 <ul>
-<li><code>Ctrl+W</code>: Show word count for the current document.</li>
+<li><code>Ctrl+W</code> (macOS: <code>RawCtrl+W</code>, i.e. the
+physical Control key rather than Cmd): Show word count for the current
+document.</li>
 <li><code>Ctrl+I</code>: Show document info.</li>
 <li><code>Ctrl+T</code>: Show table of contents.</li>
 <li><code>F7</code>: Show elements list.</li>
@@ -378,7 +401,8 @@ selection/cursor.</li>
 <li><code>Ctrl+Shift+N</code>: Add or edit bookmark note at the current
 selection/cursor.</li>
 <li><code>Ctrl+Alt+W</code>: Toggle word wrap.</li>
-<li><code>Ctrl+,</code>: Open options.</li>
+<li><code>Ctrl+,</code>: Open options (macOS: Preferences, under the app
+menu).</li>
 <li><code>Ctrl+Shift+S</code>: Toggle sleep timer.</li>
 </ul>
 <h2 id="help-menu">Help menu</h2>
@@ -395,10 +419,11 @@ keys</h2>
 <ul>
 <li><code>Delete</code> / <code>Numpad Delete</code> on the tab control:
 Close the selected document tab.</li>
-<li><code>Enter</code> in the document text: Activate link at cursor, or
-open a table view when on a table marker.</li>
-<li><code>Shift+F10</code> in the document text: Open the context
-menu.</li>
+<li><code>Enter</code> or <code>Space</code> in the document text:
+Activate link at cursor, or open a table view when on a table
+marker.</li>
+<li><code>Shift+F10</code> or the Menu/Application key in the document
+text: Open the context menu.</li>
 </ul>
 <h1 id="supported-languages">Supported languages</h1>
 <p>Paperback is translated into many different languages, with more
@@ -453,6 +478,92 @@ inclusion in this list.</p>
 <li>Tyler Rodick</li>
 </ul>
 <h1 id="changelog">Changelog</h1>
+<h2 id="version-0.9.0">Version 0.9.0</h2>
+<ul>
+<li>Added a cancel button to the update-in-progress dialog.</li>
+<li>Added a CLI tool, called pb, to quickly convert any of Paperback’s
+supported formats to HTML, Markdown, or plain text.</li>
+<li>Added a Configurable Shortcut to Restore Paperback from the system
+tray.</li>
+<li>Added a locate button to the all documents dialog to locate missing
+books that just changed their path.</li>
+<li>Added a readability tab to the options dialog, with the following
+options:
+<ul>
+<li>Word wrap (moved from general);</li>
+<li>Render tables inline (new in this release, see below);</li>
+<li>Font;</li>
+<li>Background color;</li>
+<li>Line spacing;</li>
+<li>paragraph spacing;</li>
+<li>Letter spacing;</li>
+<li>Text alignment.</li>
+</ul></li>
+<li>Added a toggle to determine how you want tables displayed, and
+unified how tables are displayed across documents.</li>
+<li>added a View Source option to open a document’s source in a new tab,
+useful for editing Markdown for example.</li>
+<li>Added estimated reading time to the word count dialog, as well as
+the ability to set your reading speed to make this metric actually
+useful.</li>
+<li>Added Android support!</li>
+<li>Added iOS support!</li>
+<li>Added macOS support!</li>
+<li>Added new languages: Dutch, Finish, and Polish.</li>
+<li>Added support for navigating by container.</li>
+<li>Added support for lists, list items, figures, and images in CHM
+documents.</li>
+<li>Added a word wrap menu item and subsequent hotkey.</li>
+<li>Allow resizing the webview dialog and make it pop up at a much
+easier-to-see size.</li>
+<li>Expanded the export menu item to allow exporting to HTML and
+Markdown in addition to plain text.</li>
+<li>Fixed applying word wrap shooting you to the start of your
+document.</li>
+<li>Fix daisy books showing incorrect info in the status bar.</li>
+<li>Fixed dl, dt, and dd elements not producing line breaks in XHTML
+documents.</li>
+<li>Fixed Escape not closing the Document Info and All Documents
+dialogs.</li>
+<li>Fixed filepos anchors in Mobi books splitting HTML tags and putting
+garbage in the book text.</li>
+<li>Fixed lag when getting near the end of the text field in large
+documents.</li>
+<li>Fixed links in legacy mobi books.</li>
+<li>Fixed parsing RTF documents with non-Latin characters in them.</li>
+<li>Fixed the title bar not updating after closing a document from the
+all documents dialog.</li>
+<li>Fixed word documents with locale-specific style names not rendering
+their headings properly.</li>
+<li>Fixed your selected tab not getting properly focused after
+restarting Paperback.</li>
+<li>If a selection is active when you open the word count dialog, how
+many words you have selected will now be shown.</li>
+<li>Majorly improved AZW3 parsing.</li>
+<li>Migrated away from chmlib to our own pure-Rust CHM file reader.</li>
+<li>On desktop, .paperback files will no longer be forcefully loaded on
+document restoration. Instead, you will be asked for Confirmation when
+the file is found.</li>
+<li>Paperback now falls back to plain text extraction for falsely-tagged
+PDFs.</li>
+<li>Open containing folder now focuses the given file in explorer.</li>
+<li>Opening the readme will now respect your selected language.</li>
+<li>PowerPoint documents now support tables.</li>
+<li>Properly update the menu and set focus to the text control when
+opening help in paperback.</li>
+<li>Readme.html will no longer be added to your all documents list when
+opened via Shift+F1.</li>
+<li>Removing documents from the recents dialog will now also close their
+active tab.</li>
+<li>Switched to a much more secure method of IPC on Windows.</li>
+<li>The updater now properly shows the content of markdown code tags in
+release notes.</li>
+<li>The updater now validates the downloaded file hasn’t been tampered
+with.</li>
+<li>The webview is now opened at your current reading position.</li>
+<li>Your search filter in the all documents dialog is now preserved
+after removing a document.</li>
+</ul>
 <h2 id="version-0.8.5">Version 0.8.5</h2>
 <ul>
 <li>Added page support to epub books.</li>
