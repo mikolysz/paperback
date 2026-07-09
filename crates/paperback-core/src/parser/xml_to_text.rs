@@ -5,12 +5,14 @@ use roxmltree::{Document, Node, NodeType, ParsingOptions};
 use crate::{
 	parser::{
 		ConverterOutput,
+		math::{normalize_fragment, spoken_math_text},
 		table_text::{push_finalized_line, table_render_bundle},
 		util::xml::collect_element_text,
 	},
 	t,
 	types::{
-		FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, PageBreakInfo, SeparatorInfo, TableInfo,
+		FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, MathInfo, PageBreakInfo, SeparatorInfo,
+		TableInfo,
 	},
 	util::text::{collapse_whitespace, display_len, format_list_item, remove_soft_hyphens, trim_string},
 };
@@ -38,6 +40,7 @@ pub struct XmlToText {
 	images: Vec<ImageInfo>,
 	figures: Vec<ImageInfo>,
 	tables: Vec<TableInfo>,
+	maths: Vec<MathInfo>,
 	separators: Vec<SeparatorInfo>,
 	page_breaks: Vec<PageBreakInfo>,
 	lists: Vec<ListInfo>,
@@ -140,6 +143,11 @@ impl XmlToText {
 	}
 
 	#[must_use]
+	pub fn get_maths(&self) -> &[MathInfo] {
+		&self.maths
+	}
+
+	#[must_use]
 	pub fn get_separators(&self) -> &[SeparatorInfo] {
 		&self.separators
 	}
@@ -183,6 +191,7 @@ impl XmlToText {
 		self.images.clear();
 		self.figures.clear();
 		self.tables.clear();
+		self.maths.clear();
 		self.separators.clear();
 		self.page_breaks.clear();
 		self.lists.clear();
@@ -238,6 +247,15 @@ impl XmlToText {
 		let mut skip_children = false;
 		if Self::tag_is(tag_name, "table") {
 			self.handle_table_xml(node);
+			return true;
+		}
+		if Self::tag_is(tag_name, "math") {
+			if self.in_body {
+				if let Some(id) = node.attribute("id").or_else(|| node.attribute("name")) {
+					self.id_positions.insert(id.to_string(), self.get_current_text_position());
+				}
+				self.handle_math_xml(node);
+			}
 			return true;
 		}
 		if Self::tag_is(tag_name, "hr") && self.in_body {
@@ -351,6 +369,30 @@ impl XmlToText {
 			html_content: table_xml,
 			length: display_length,
 		});
+	}
+
+	fn handle_math_xml(&mut self, node: Node<'_, '_>) {
+		let mathml = normalize_fragment(node.document().input_text()[node.range()].to_string());
+		let Some(spoken) = spoken_math_text(&mathml, node.attribute("alttext"), || collect_element_text(node)) else {
+			return;
+		};
+
+		// MathML3§2.2.1.
+		// TODO: I think that it's possible to control math display style via custom CSS classes,
+		// and we don't understand those right now. Let's not worry about this until we
+		// see somebody actually doing this in the wild.
+		let block = node.attribute("display") == Some("block");
+		if block {
+			self.finalize_current_line();
+		}
+		let offset = self.get_current_text_position();
+		let mut length = display_len(&spoken);
+		self.current_line.push_str(&spoken);
+		if block {
+			self.finalize_current_line();
+			length += 1;
+		}
+		self.maths.push(MathInfo { offset, text: spoken, mathml, length });
 	}
 
 	/// Push a line to the output verbatim (no whitespace collapsing/trimming), updating the cached
@@ -667,6 +709,9 @@ impl ConverterOutput for XmlToText {
 	fn get_tables(&self) -> &[TableInfo] {
 		&self.tables
 	}
+	fn get_maths(&self) -> &[MathInfo] {
+		&self.maths
+	}
 	fn get_separators(&self) -> &[SeparatorInfo] {
 		&self.separators
 	}
@@ -972,6 +1017,92 @@ mod tests {
 		let links = converter.get_links();
 		assert_eq!(links.len(), 1);
 		assert_eq!(links[0].text, "bold");
+	}
+
+	#[test]
+	fn math_emits_spoken_text_inline() {
+		let xml = concat!(
+			"<root><body><p>Let ",
+			"<math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mi>x</mi><mo>=</mo><mn>1</mn></math>",
+			" hold.</p></body></root>"
+		);
+		let mut converter = XmlToText::new();
+		assert!(converter.convert(xml));
+		assert_eq!(converter.get_text(), "Let x is equal to 1 hold.");
+		let maths = converter.get_maths();
+		assert_eq!(maths.len(), 1);
+		assert_eq!(maths[0].text, "x is equal to 1");
+		assert_eq!(maths[0].offset, 4);
+		assert_eq!(maths[0].length, display_len("x is equal to 1"));
+		assert!(maths[0].mathml.starts_with("<math"), "got: {}", maths[0].mathml);
+		assert!(maths[0].mathml.contains("<mi>x</mi>"));
+	}
+
+	#[test]
+	fn math_block_display_gets_own_line() {
+		let xml = concat!(
+			"<root><body><p>Before ",
+			"<math display=\"block\"><mfrac><mi>a</mi><mi>b</mi></mfrac></math>",
+			" after.</p></body></root>"
+		);
+		let mut converter = XmlToText::new();
+		assert!(converter.convert(xml));
+		assert_eq!(converter.get_text(), "Before\neigh over b\nafter.");
+		let maths = converter.get_maths();
+		assert_eq!(maths.len(), 1);
+		assert_eq!(maths[0].offset, 7);
+		assert_eq!(maths[0].length, display_len("eigh over b") + 1, "length includes the trailing newline");
+	}
+
+	#[test]
+	fn math_fallback_prefers_alttext() {
+		let xml = "<root><body><math alttext=\"x plus one\"><foo>y</foo></math></body></root>";
+		let mut converter = XmlToText::new();
+		assert!(converter.convert(xml));
+		assert_eq!(converter.get_text(), "x plus one");
+		assert_eq!(converter.get_maths().len(), 1);
+	}
+
+	#[test]
+	fn math_fallback_uses_child_text_without_alttext() {
+		// MathCAT rejects unknown elements ("'foo' is not a valid MathML element").
+		let xml = "<root><body><math><foo>y</foo></math></body></root>";
+		let mut converter = XmlToText::new();
+		assert!(converter.convert(xml));
+		assert_eq!(converter.get_text(), "y");
+		assert_eq!(converter.get_maths().len(), 1);
+	}
+
+	#[test]
+	fn math_with_no_speech_and_no_fallback_emits_nothing() {
+		let xml = "<root><body><p>A <math></math>B</p></body></root>";
+		let mut converter = XmlToText::new();
+		assert!(converter.convert(xml));
+		assert_eq!(converter.get_text(), "A B");
+		assert!(converter.get_maths().is_empty());
+	}
+
+	#[test]
+	fn prefixed_math_is_handled_and_reference_is_prefix_free() {
+		let xml = concat!(
+			"<root xmlns:m=\"http://www.w3.org/1998/Math/MathML\"><body>",
+			"<m:math><m:mi>x</m:mi><m:mo>=</m:mo><m:mn>1</m:mn></m:math>",
+			"</body></root>"
+		);
+		let mut converter = XmlToText::new();
+		assert!(converter.convert(xml));
+		assert_eq!(converter.get_text(), "x is equal to 1");
+		let maths = converter.get_maths();
+		assert_eq!(maths.len(), 1);
+		assert!(maths[0].mathml.starts_with("<math"), "prefix should be stripped: {}", maths[0].mathml);
+	}
+
+	#[test]
+	fn math_element_id_is_indexed() {
+		let xml = "<root><body><p>Before</p><math id=\"eq1\"><mi>x</mi></math></body></root>";
+		let mut converter = XmlToText::new();
+		assert!(converter.convert(xml));
+		assert_eq!(converter.get_id_positions().get("eq1"), Some(&converter.get_maths()[0].offset));
 	}
 
 	#[test]

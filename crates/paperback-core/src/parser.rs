@@ -10,7 +10,7 @@ use anyhow::Result;
 use crate::{
 	document::{Document, DocumentBuffer, Marker, MarkerType, ParserContext, ParserFlags},
 	t,
-	types::{FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, SeparatorInfo, TableInfo},
+	types::{FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, MathInfo, SeparatorInfo, TableInfo},
 };
 
 pub mod chm;
@@ -20,6 +20,7 @@ pub mod fb2;
 pub mod html;
 pub mod html_to_text;
 pub mod markdown;
+pub mod math;
 pub mod mobi;
 pub mod odp;
 pub mod odt;
@@ -250,6 +251,7 @@ pub trait ConverterOutput {
 	fn get_images(&self) -> &[ImageInfo];
 	fn get_figures(&self) -> &[ImageInfo];
 	fn get_tables(&self) -> &[TableInfo];
+	fn get_maths(&self) -> &[MathInfo];
 	fn get_separators(&self) -> &[SeparatorInfo];
 	fn get_lists(&self) -> &[ListInfo];
 	fn get_list_items(&self) -> &[ListItemInfo];
@@ -317,6 +319,14 @@ fn add_tables_separators_lists(buffer: &mut DocumentBuffer, converter: &dyn Conv
 				.with_level(list_item.level),
 		);
 	}
+	for math in converter.get_maths() {
+		buffer.add_marker(
+			Marker::new(MarkerType::Math, offset + math.offset)
+				.with_text(math.text.clone())
+				.with_reference(math.mathml.clone())
+				.with_length(math.length),
+		);
+	}
 }
 
 fn add_formatting(buffer: &mut DocumentBuffer, converter: &dyn ConverterOutput, offset: usize) {
@@ -368,7 +378,7 @@ mod tests {
 	use rstest::rstest;
 
 	use super::*;
-	use crate::types::{FormatInfo, HeadingInfo, LinkInfo, ListInfo, ListItemInfo, SeparatorInfo, TableInfo};
+	use crate::types::{FormatInfo, HeadingInfo, LinkInfo, ListInfo, ListItemInfo, MathInfo, SeparatorInfo, TableInfo};
 
 	struct MockConverter {
 		headings: Vec<HeadingInfo>,
@@ -376,6 +386,7 @@ mod tests {
 		images: Vec<ImageInfo>,
 		figures: Vec<ImageInfo>,
 		tables: Vec<TableInfo>,
+		maths: Vec<MathInfo>,
 		separators: Vec<SeparatorInfo>,
 		lists: Vec<ListInfo>,
 		list_items: Vec<ListItemInfo>,
@@ -403,6 +414,10 @@ mod tests {
 
 		fn get_tables(&self) -> &[TableInfo] {
 			&self.tables
+		}
+
+		fn get_maths(&self) -> &[MathInfo] {
+			&self.maths
 		}
 
 		fn get_separators(&self) -> &[SeparatorInfo] {
@@ -440,6 +455,12 @@ mod tests {
 				text: "T".to_string(),
 				html_content: "<table/>".to_string(),
 				length: 11,
+			}],
+			maths: vec![MathInfo {
+				offset: 7,
+				text: "x is equal to 1".to_string(),
+				mathml: "<math><mi>x</mi><mo>=</mo><mn>1</mn></math>".to_string(),
+				length: 15,
 			}],
 			separators: vec![SeparatorInfo { offset: 4, length: 7 }],
 			lists: vec![ListInfo { offset: 5, item_count: 3, length: 4 }],
@@ -505,7 +526,7 @@ mod tests {
 		let converter = sample_converter();
 		let mut buffer = DocumentBuffer::new();
 		add_converter_markers(&mut buffer, &converter, 100);
-		assert_eq!(buffer.markers.len(), 6);
+		assert_eq!(buffer.markers.len(), 7);
 		assert_eq!(buffer.markers[0].mtype, MarkerType::Heading2);
 		assert_eq!(buffer.markers[0].position, 101);
 		assert_eq!(buffer.markers[0].text, "Heading");
@@ -520,6 +541,11 @@ mod tests {
 		assert_eq!(buffer.markers[4].level, 3);
 		assert_eq!(buffer.markers[5].mtype, MarkerType::ListItem);
 		assert_eq!(buffer.markers[5].level, 1);
+		assert_eq!(buffer.markers[6].mtype, MarkerType::Math);
+		assert_eq!(buffer.markers[6].position, 107);
+		assert_eq!(buffer.markers[6].text, "x is equal to 1");
+		assert_eq!(buffer.markers[6].reference, "<math><mi>x</mi><mo>=</mo><mn>1</mn></math>");
+		assert_eq!(buffer.markers[6].length, 15);
 	}
 
 	#[test]
@@ -527,7 +553,8 @@ mod tests {
 		let converter = sample_converter();
 		let mut buffer = DocumentBuffer::new();
 		add_converter_markers_excluding_links(&mut buffer, &converter, 10);
-		assert_eq!(buffer.markers.len(), 5);
+		assert_eq!(buffer.markers.len(), 6);
+		assert!(buffer.markers.iter().any(|marker| marker.mtype == MarkerType::Math));
 		assert!(buffer.markers.iter().all(|marker| marker.mtype != MarkerType::Link));
 	}
 
@@ -539,6 +566,7 @@ mod tests {
 			images: vec![],
 			figures: vec![],
 			tables: vec![],
+			maths: vec![],
 			separators: vec![],
 			lists: vec![],
 			list_items: vec![],
@@ -591,6 +619,7 @@ mod tests {
 				html_content: "<table/>".to_string(),
 				length: 7, // display-unit field — must appear as marker length
 			}],
+			maths: vec![],
 			separators: vec![],
 			lists: vec![],
 			list_items: vec![],

@@ -7,10 +7,11 @@ use scraper::{ElementRef, Html, Node, node};
 use crate::{
 	parser::{
 		ConverterOutput,
+		math::spoken_math_text,
 		table_text::{push_finalized_line, table_render_bundle},
 	},
 	t,
-	types::{FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, SeparatorInfo, TableInfo},
+	types::{FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, MathInfo, SeparatorInfo, TableInfo},
 	util::text::{collapse_whitespace, display_len, format_list_item, remove_soft_hyphens, trim_string},
 };
 
@@ -52,6 +53,7 @@ pub struct HtmlToText {
 	images: Vec<ImageInfo>,
 	figures: Vec<ImageInfo>,
 	tables: Vec<TableInfo>,
+	maths: Vec<MathInfo>,
 	separators: Vec<SeparatorInfo>,
 	lists: Vec<ListInfo>,
 	list_items: Vec<ListItemInfo>,
@@ -92,6 +94,7 @@ impl HtmlToText {
 			images: Vec::new(),
 			figures: Vec::new(),
 			tables: Vec::new(),
+			maths: Vec::new(),
 			separators: Vec::new(),
 			lists: Vec::new(),
 			list_items: Vec::new(),
@@ -160,6 +163,11 @@ impl HtmlToText {
 	}
 
 	#[must_use]
+	pub fn get_maths(&self) -> &[MathInfo] {
+		&self.maths
+	}
+
+	#[must_use]
 	pub fn get_separators(&self) -> &[SeparatorInfo] {
 		&self.separators
 	}
@@ -203,6 +211,7 @@ impl HtmlToText {
 		self.images.clear();
 		self.figures.clear();
 		self.tables.clear();
+		self.maths.clear();
 		self.separators.clear();
 		self.lists.clear();
 		self.list_items.clear();
@@ -246,6 +255,15 @@ impl HtmlToText {
 					self.handle_table(node, document);
 					return;
 				}
+				if tag_name == "math" {
+					if self.flags.contains(ProcessingFlags::IN_BODY) {
+						if let Some(id) = element.attr("id").or_else(|| element.attr("name")) {
+							self.id_positions.insert(id.to_string(), self.get_current_text_position());
+						}
+						self.handle_math(node, document);
+					}
+					return;
+				}
 				self.handle_element_opening(tag_name, node, document);
 				self.handle_list_item(tag_name, node, document);
 				self.handle_list_start(tag_name, node);
@@ -287,6 +305,27 @@ impl HtmlToText {
 			html_content: table_html,
 			length: display_length,
 		});
+	}
+
+	fn handle_math(&mut self, node: NodeRef<'_, Node>, document: &Html) {
+		let Node::Element(element) = node.value() else { return };
+		// HTML doesn't do XML namespaces; no need for `normalize_math`.
+		let mathml = Self::serialize_node(node, document);
+		let Some(spoken) = spoken_math_text(&mathml, element.attr("alttext"), || Self::collect_text(node)) else {
+			return;
+		};
+		let block = element.attr("display") == Some("block");
+		if block {
+			self.finalize_current_line();
+		}
+		let offset = self.get_current_text_position();
+		let mut length = display_len(&spoken);
+		self.current_line.push_str(&spoken);
+		if block {
+			self.finalize_current_line();
+			length += 1;
+		}
+		self.maths.push(MathInfo { offset, text: spoken, mathml, length });
 	}
 
 	/// Push a line to the output verbatim (no whitespace collapsing/trimming), updating the cached
@@ -689,6 +728,9 @@ impl ConverterOutput for HtmlToText {
 	fn get_tables(&self) -> &[TableInfo] {
 		&self.tables
 	}
+	fn get_maths(&self) -> &[MathInfo] {
+		&self.maths
+	}
 	fn get_separators(&self) -> &[SeparatorInfo] {
 		&self.separators
 	}
@@ -930,6 +972,14 @@ mod tests {
 	}
 
 	#[test]
+	fn math_element_id_is_indexed() {
+		let html = "<html><body><p>Before</p><math id=\"eq1\"><mi>x</mi></math></body></html>";
+		let mut converter = HtmlToText::new();
+		assert!(converter.convert(html, HtmlSourceMode::NativeHtml));
+		assert_eq!(converter.get_id_positions().get("eq1"), Some(&converter.get_maths()[0].offset));
+	}
+
+	#[test]
 	fn pre_block_preserves_whitespace_characters() {
 		let html = "<html><body><pre>  spaced  </pre></body></html>";
 		let mut converter = HtmlToText::new();
@@ -964,6 +1014,70 @@ mod tests {
 		let table = &tables[0];
 		assert_eq!(table.offset, 6, "table starts after 'Intro\n'");
 		assert_eq!(table.length, 5, "length must be the display extent (5 display units), not byte length (6)");
+	}
+
+	#[test]
+	fn math_emits_spoken_text_inline() {
+		let html = concat!(
+			"<html><body><p>Let ",
+			"<math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mi>x</mi><mo>=</mo><mn>1</mn></math>",
+			" hold.</p></body></html>"
+		);
+		let mut converter = HtmlToText::new();
+		assert!(converter.convert(html, HtmlSourceMode::NativeHtml));
+		assert_eq!(converter.get_text(), "Let x is equal to 1 hold.");
+		let maths = converter.get_maths();
+		assert_eq!(maths.len(), 1);
+		assert_eq!(maths[0].text, "x is equal to 1");
+		assert_eq!(maths[0].offset, 4);
+		assert_eq!(maths[0].length, display_len("x is equal to 1"));
+	}
+
+	#[test]
+	fn math_reference_is_serialized_subtree() {
+		let html = "<html><body><math><msup><mi>x</mi><mn>2</mn></msup></math></body></html>";
+		let mut converter = HtmlToText::new();
+		assert!(converter.convert(html, HtmlSourceMode::NativeHtml));
+		let maths = converter.get_maths();
+		assert_eq!(maths.len(), 1);
+		assert_eq!(converter.get_text(), "x squared");
+		assert!(maths[0].mathml.starts_with("<math"), "got: {}", maths[0].mathml);
+		assert!(maths[0].mathml.contains("<mi>x</mi>"), "got: {}", maths[0].mathml);
+		assert!(maths[0].mathml.ends_with("</math>"), "got: {}", maths[0].mathml);
+	}
+
+	#[test]
+	fn math_block_display_gets_own_line() {
+		let html = concat!(
+			"<html><body><p>Before ",
+			"<math display=\"block\"><mfrac><mi>a</mi><mi>b</mi></mfrac></math>",
+			" after.</p></body></html>"
+		);
+		let mut converter = HtmlToText::new();
+		assert!(converter.convert(html, HtmlSourceMode::NativeHtml));
+		assert_eq!(converter.get_text(), "Before\neigh over b\nafter.");
+		let maths = converter.get_maths();
+		assert_eq!(maths.len(), 1);
+		assert_eq!(maths[0].offset, 7);
+		assert_eq!(maths[0].length, display_len("eigh over b") + 1, "length includes the trailing newline");
+	}
+
+	#[test]
+	fn math_fallback_prefers_alttext() {
+		let html = "<html><body><math alttext=\"x plus one\"><foo>y</foo></math></body></html>";
+		let mut converter = HtmlToText::new();
+		assert!(converter.convert(html, HtmlSourceMode::NativeHtml));
+		assert_eq!(converter.get_text(), "x plus one");
+		assert_eq!(converter.get_maths().len(), 1);
+	}
+
+	#[test]
+	fn math_with_no_speech_and_no_fallback_emits_nothing() {
+		let html = "<html><body><p>A <math></math>B</p></body></html>";
+		let mut converter = HtmlToText::new();
+		assert!(converter.convert(html, HtmlSourceMode::NativeHtml));
+		assert_eq!(converter.get_text(), "A B");
+		assert!(converter.get_maths().is_empty());
 	}
 
 	#[test]
