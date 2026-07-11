@@ -47,6 +47,7 @@ fun getSegmentTypeName(type: SegmentTypeFfi): String =
 		SegmentTypeFfi.SEPARATOR -> t("Separator")
 		SegmentTypeFfi.IMAGE -> t("Image")
 		SegmentTypeFfi.FIGURE -> t("Figure")
+		SegmentTypeFfi.MATH -> t("Math")
 	}
 
 @OptIn(ExperimentalMaterial3Api::class)

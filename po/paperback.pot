@@ -2481,3 +2481,6 @@ msgstr ""
 
 msgid "Help"
 msgstr ""
+
+msgid "Math"
+msgstr ""
