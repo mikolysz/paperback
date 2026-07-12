@@ -98,6 +98,8 @@ Shortcuts below are for Windows. Where macOS differs, the equivalent is noted in
 * `F`: Next figure.
 * `Shift+T`: Previous table.
 * `T`: Next table.
+* `Shift+M`: Previous formula.
+* `M`: Next formula.
 * `Shift+S`: Previous separator.
 * `S`: Next separator.
 * `Shift+L`: Previous list.
@@ -136,7 +138,7 @@ Shortcuts below are for Windows. Where macOS differs, the equivalent is noted in
 ### Additional document-view keys
 
 * `Delete` / `Numpad Delete` on the tab control: Close the selected document tab.
-* `Enter` or `Space` in the document text: Activate link at cursor, or open a table view when on a table marker.
+* `Enter` or `Space` in the document text: Activate the link at the cursor, or open a table or formula view when on its marker.
 * `Shift+F10` or the Menu/Application key in the document text: Open the context menu.
 
 ## Supported languages
@@ -210,6 +212,7 @@ Note: I consider a public GitHub sponsor grounds for automatic inclusion in this
 * Added Android support!
 * Added iOS support!
 * Added macOS support!
+* Added spoken MathML and formula navigation to EPUB and HTML documents. Press `M` or `Shift+M` to move between formulas, then press `Enter` or `Space` to open Formula View.
 * Added new languages: Dutch, Finish, and Polish.
 * Added support for navigating by container.
 * Added support for lists, list items, figures, and images in CHM documents.

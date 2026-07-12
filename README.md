@@ -23,7 +23,7 @@
 - Intuitive tabbed interface for managing multiple documents, with single-instance behavior so opening a file from the shell or a file association reuses the running window
 - Full screen reader accessibility, including live-region status announcements for actions like search results and navigation
 - Robust find functionality with match case, whole word, and regular expression options, plus persisted search history
-- Seamless navigation between EPUB sections, headings (per level), pages, links, lists, list items, images, figures, tables, and separators via hotkeys similar to screen reader conventions, with a table of contents and elements list for quick jumps
+- Seamless navigation between EPUB sections, headings (per level), pages, links, lists, list items, images, figures, tables, formulas, and separators via hotkeys similar to screen reader conventions, with a table of contents and elements list for quick jumps
 - Precise navigation to specific lines or percentages within documents, plus per-document navigation history (back/forward)
 - Bookmarks and notes, with optional sound feedback and a dedicated dialog to jump to any of them
 - Extensive readability customization: custom fonts and colors, line/paragraph/letter spacing, text alignment, word wrap, and inline vs. placeholder table rendering
