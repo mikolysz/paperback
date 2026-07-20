@@ -542,6 +542,14 @@ impl MainWindow {
 		let dm_for_timer = Rc::clone(doc_manager);
 		let config_for_timer = Rc::clone(&config);
 		sleep_timer.on_tick(move |_| {
+			// Timer tick closures are bound to the frame without a timer id, so every closure
+			// runs for every frame-owned timer's tick, not just its own. Act only when a
+			// sleep timer was set AND it actually fired: a pending one-shot wx timer reports
+			// is_running() until it fires, so a still-running sleep timer means this dispatch
+			// came from some other timer's tick.
+			if !sleep_timer_running_for_tick.get() || sleep_timer_for_tick.is_running() {
+				return;
+			}
 			tracing::info!("sleep timer fired, closing application");
 			sleep_timer_running_for_tick.set(false);
 			sleep_timer_for_tick.stop();
