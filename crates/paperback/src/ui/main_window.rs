@@ -247,7 +247,7 @@ impl MainWindow {
 		}
 		let result = self.doc_manager.lock().unwrap().open_file(&self.doc_manager, path);
 		if result {
-			self.update_title();
+			update_title_from_manager(&self.frame, &self.doc_manager.lock().unwrap());
 			self.update_recent_documents_menu();
 			self.doc_manager.lock().unwrap().restore_focus();
 		}
@@ -397,27 +397,6 @@ impl MainWindow {
 		#[cfg(not(target_os = "windows"))]
 		{
 			self.frame.has_focus()
-		}
-	}
-
-	fn update_title(&self) {
-		let Ok(dm) = self.doc_manager.try_lock() else {
-			return;
-		};
-		if dm.tab_count() == 0 {
-			// TRANSLATORS: Main window title when no document is open
-			self.frame.set_title(&t("Paperback"));
-			// TRANSLATORS: Default status bar text when no document is open
-			self.frame.set_status_text(&t("Ready"), 0);
-			return;
-		}
-		if let Some(tab) = dm.active_tab() {
-			// TRANSLATORS: Window title when a document is open; {} is the document title
-			let template = t("Paperback - {}");
-			self.frame.set_title(&template.replace("{}", &display_title(tab)));
-			// TRANSLATORS: Status bar character count; {} is the number of characters
-			let chars_label = t("{} chars");
-			self.frame.set_status_text(&chars_label.replace("{}", &tab.session.content().len().to_string()), 0);
 		}
 	}
 
@@ -1840,36 +1819,31 @@ fn close_active_document_announced(dm: &mut DocumentManager, live_region_label: 
 	dm.close_document(index, true);
 }
 
+/// Refreshes the window title and status bar to match the active document. This is the single
+/// place either is derived from manager state, so every open, close, and tab switch agrees on
+/// what they say.
 fn update_title_from_manager(frame: &Frame, dm: &DocumentManager) {
-	let sleep_start = SLEEP_TIMER_START_MS.load(Ordering::SeqCst);
-	let sleep_duration = SLEEP_TIMER_DURATION_MINUTES.load(Ordering::SeqCst);
-	if dm.tab_count() == 0 {
-		frame.set_title(&t("Paperback"));
-		let mut status_text = t("Ready");
-		if sleep_start > 0 {
-			let remaining = status::calculate_sleep_timer_remaining(sleep_start, sleep_duration);
-			if remaining > 0 {
-				status_text = status::format_sleep_timer_status(&status_text, remaining);
-			}
-		}
-		frame.set_status_text(&status_text, 0);
-		return;
-	}
 	if let Some(tab) = dm.active_tab() {
 		// TRANSLATORS: Window title when a document is open; {} is the document title
-		let template = t("Paperback - {}");
-		frame.set_title(&template.replace("{}", &display_title(tab)));
-		let position = tab.text_ctrl.get_insertion_point();
-		let status_info = tab.session.get_status_info(position);
-		let mut status_text = status::format_status_text(&status_info);
-		if sleep_start > 0 {
-			let remaining = status::calculate_sleep_timer_remaining(sleep_start, sleep_duration);
-			if remaining > 0 {
-				status_text = status::format_sleep_timer_status(&status_text, remaining);
-			}
-		}
-		frame.set_status_text(&status_text, 0);
+		frame.set_title(&t("Paperback - {}").replace("{}", &display_title(tab)));
+	} else {
+		// TRANSLATORS: Main window title when no document is open
+		frame.set_title(&t("Paperback"));
 	}
+	let mut status_text = dm.active_tab().map_or_else(
+		// TRANSLATORS: Default status bar text when no document is open
+		|| t("Ready"),
+		|tab| status::format_status_text(&tab.session.get_status_info(tab.text_ctrl.get_insertion_point())),
+	);
+	let sleep_start = SLEEP_TIMER_START_MS.load(Ordering::SeqCst);
+	if sleep_start > 0 {
+		let sleep_duration = SLEEP_TIMER_DURATION_MINUTES.load(Ordering::SeqCst);
+		let remaining = status::calculate_sleep_timer_remaining(sleep_start, sleep_duration);
+		if remaining > 0 {
+			status_text = status::format_sleep_timer_status(&status_text, remaining);
+		}
+	}
+	frame.set_status_text(&status_text, 0);
 }
 
 #[cfg(test)]

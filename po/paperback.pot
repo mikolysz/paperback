@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: paperback 0.8.5\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-24 10:48-0600\n"
+"POT-Creation-Date: 2026-07-31 04:50+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -750,14 +750,6 @@ msgstr ""
 msgid "Paperback cannot perform any actions while Web View is open."
 msgstr ""
 
-#. TRANSLATORS: Window title when a document is open; {} is the document title
-msgid "Paperback - {}"
-msgstr ""
-
-#. TRANSLATORS: Status bar character count; {} is the number of characters
-msgid "{} chars"
-msgstr ""
-
 #. TRANSLATORS: Title of the file picker dialog shown when opening a document
 msgid "Open Document"
 msgstr ""
@@ -872,6 +864,10 @@ msgstr ""
 
 #. TRANSLATORS: Announced when opening "All Documents" while the recent-documents list is empty
 msgid "No recent documents."
+msgstr ""
+
+#. TRANSLATORS: Window title when a document is open; {} is the document title
+msgid "Paperback - {}"
 msgstr ""
 
 #. TRANSLATORS: Menu item label to go to the previous section
@@ -2116,6 +2112,9 @@ msgid "Failed to launch update script"
 msgstr ""
 
 msgid "Unknown update file format."
+msgstr ""
+
+msgid "{} chars"
 msgstr ""
 
 msgid "Go To…"
