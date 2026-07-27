@@ -22,7 +22,7 @@ pub use go_to_percent::show_go_to_percent_dialog;
 mod note_entry;
 pub use note_entry::show_note_entry_dialog;
 mod open_as;
-pub use open_as::show_open_as_dialog;
+pub use open_as::ensure_parser_ready_for_path;
 mod options;
 pub use options::show_options_dialog;
 mod sleep_timer;

@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: paperback 0.8.5\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-24 10:48-0600\n"
+"POT-Creation-Date: 2026-07-31 04:50+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -264,6 +264,10 @@ msgstr ""
 
 #. TRANSLATORS: Label for the numeric percentage entry field
 msgid "P&ercent:"
+msgstr ""
+
+#. TRANSLATORS: Error shown when the user picks a file format from the "Open As" dialog that this parser build doesn't support
+msgid "Unsupported format selected."
 msgstr ""
 
 #. TRANSLATORS: Title of the Open As dialog
@@ -736,10 +740,6 @@ msgstr ""
 
 #. TRANSLATORS: Error shown when the OS default web browser could not be launched to open the donation page
 msgid "Failed to open donation page in browser."
-msgstr ""
-
-#. TRANSLATORS: Error shown when the user picks a file format from the "Open As" dialog that this parser build doesn't support
-msgid "Unsupported format selected."
 msgstr ""
 
 #. TRANSLATORS: Main window title when no document is open
