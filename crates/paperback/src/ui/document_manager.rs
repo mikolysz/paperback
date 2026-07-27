@@ -165,7 +165,7 @@ impl DocumentManager {
 					let config = self.config.lock().unwrap();
 					config.set_document_password(&path_str, "");
 					drop(config);
-					let password = prompt_for_password(&self.notebook);
+					let password = prompt_for_password(&self.notebook, path);
 					let Some(password) = password else {
 						// TRANSLATORS: Error shown when the user dismisses the password prompt for an encrypted document without entering one
 						show_error_dialog(&self.notebook, &t("Password is required."), &t("Error"));
@@ -823,9 +823,16 @@ fn normalized_path_key(path: &Path) -> String {
 	}
 }
 
-fn prompt_for_password(parent: &dyn WxWidget) -> Option<String> {
-	// TRANSLATORS: Label for the password entry field in the "Document Password" prompt dialog
-	let dialog = TextEntryDialog::builder(parent, &t("&Password:"), &t("Document Password")).password().build();
+/// Prompts for an encrypted document's password. The prompt names the document so the user can
+/// tell which one is being asked about.
+fn prompt_for_password(parent: &dyn WxWidget, path: &Path) -> Option<String> {
+	// wx treats `&` in labels as a mnemonic marker, so a filename ampersand must be doubled to
+	// display literally.
+	let filename = title_or_filename(String::new(), path).replace('&', "&&");
+	// TRANSLATORS: Label for the password entry field in the "Document Password" prompt dialog; {} is the document's file name
+	let message = t("&Password for {}:").replace("{}", &filename);
+	// TRANSLATORS: Title of the prompt dialog asking for an encrypted document's password
+	let dialog = TextEntryDialog::builder(parent, &message, &t("Document Password")).password().build();
 	if dialog.show_modal() != ID_OK {
 		return None;
 	}

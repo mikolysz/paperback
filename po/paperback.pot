@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: paperback 0.8.5\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-24 10:48-0600\n"
+"POT-Creation-Date: 2026-07-31 04:53+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -613,10 +613,11 @@ msgstr ""
 msgid "Table View"
 msgstr ""
 
-#. TRANSLATORS: Label for the password entry field in the "Document Password" prompt dialog
-msgid "&Password:"
+#. TRANSLATORS: Label for the password entry field in the "Document Password" prompt dialog; {} is the document's file name
+msgid "&Password for {}:"
 msgstr ""
 
+#. TRANSLATORS: Title of the prompt dialog asking for an encrypted document's password
 msgid "Document Password"
 msgstr ""
 
@@ -2116,6 +2117,9 @@ msgid "Failed to launch update script"
 msgstr ""
 
 msgid "Unknown update file format."
+msgstr ""
+
+msgid "&Password:"
 msgstr ""
 
 msgid "Go To…"
