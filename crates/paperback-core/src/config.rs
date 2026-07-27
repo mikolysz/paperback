@@ -625,7 +625,11 @@ impl ConfigManager {
 		self.dirty.set(true);
 	}
 
-	pub fn add_recent_document(&self, path: &str) {
+	/// Moves `path` to the front of the recent-documents list, or directly behind `after` when
+	/// given (front when `after` is absent from the list). Recents are newest-first, so a caller
+	/// completing opens out of order can pass the entry of the next-newer document to keep the
+	/// list ordered by request order.
+	pub fn add_recent_document(&self, path: &str, after: Option<&str>) {
 		if !self.initialized {
 			return;
 		}
@@ -636,7 +640,8 @@ impl ConfigManager {
 			if let Some(idx) = data.recent_documents.iter().position(|p| p == path) {
 				data.recent_documents.remove(idx);
 			}
-			data.recent_documents.insert(0, path.to_string());
+			let index = after.and_then(|a| data.recent_documents.iter().position(|p| p == a)).map_or(0, |i| i + 1);
+			data.recent_documents.insert(index, path.to_string());
 			while data.recent_documents.len() > MAX_RECENT_DOCUMENTS_TO_SHOW {
 				data.recent_documents.pop();
 			}
@@ -651,14 +656,20 @@ impl ConfigManager {
 		self.data.borrow().recent_documents.clone()
 	}
 
-	pub fn add_opened_document(&self, path: &str) {
+	/// Adds `path` to the opened-documents list, directly before `before` when given (appending
+	/// when `before` is absent from the list). A path already on the list keeps its position, so
+	/// re-adding restored documents is a no-op.
+	pub fn add_opened_document(&self, path: &str, before: Option<&str>) {
 		if !self.initialized {
 			return;
 		}
 		{
 			let mut data = self.data.borrow_mut();
 			if !data.opened_documents.iter().any(|p| p == path) {
-				data.opened_documents.push(path.to_string());
+				let index = before
+					.and_then(|b| data.opened_documents.iter().position(|p| p == b))
+					.unwrap_or(data.opened_documents.len());
+				data.opened_documents.insert(index, path.to_string());
 			}
 		}
 		self.dirty.set(true);
@@ -1135,6 +1146,41 @@ mod tests {
 		let a = config.get_doc_key("book-a.epub");
 		let b = config.get_doc_key("book-b.epub");
 		assert_ne!(a, b);
+	}
+
+	#[test]
+	fn add_opened_document_inserts_before_and_keeps_existing_positions() {
+		let mut config = ConfigManager::new();
+		config.initialized = true;
+		config.add_opened_document("a.epub", None);
+		config.add_opened_document("c.epub", None);
+		config.add_opened_document("b.epub", Some("c.epub"));
+		assert_eq!(config.get_opened_documents(), ["a.epub", "b.epub", "c.epub"]);
+
+		// A listed path keeps its position even when a different anchor is given.
+		config.add_opened_document("b.epub", Some("a.epub"));
+		// An anchor missing from the list appends.
+		config.add_opened_document("d.epub", Some("missing.epub"));
+		assert_eq!(config.get_opened_documents(), ["a.epub", "b.epub", "c.epub", "d.epub"]);
+	}
+
+	#[test]
+	fn add_recent_document_inserts_behind_anchor() {
+		let mut config = ConfigManager::new();
+		config.initialized = true;
+		config.add_recent_document("a.epub", None);
+		config.add_recent_document("c.epub", None);
+		assert_eq!(config.get_recent_documents(), ["c.epub", "a.epub"]);
+
+		// A later-requested document that finished first anchors an earlier one behind it.
+		config.add_recent_document("b.epub", Some("c.epub"));
+		assert_eq!(config.get_recent_documents(), ["c.epub", "b.epub", "a.epub"]);
+
+		// Re-adding moves the entry: recents are most-recently-opened-first.
+		config.add_recent_document("a.epub", None);
+		// An anchor missing from the list means the entry is the newest.
+		config.add_recent_document("d.epub", Some("missing.epub"));
+		assert_eq!(config.get_recent_documents(), ["d.epub", "a.epub", "c.epub", "b.epub"]);
 	}
 
 	#[test]

@@ -747,6 +747,10 @@ msgstr ""
 msgid "Password is required."
 msgstr ""
 
+#. TRANSLATORS: Status bar text while open documents are being re-parsed after a settings change
+msgid "Reloading documents…"
+msgstr ""
+
 #. TRANSLATORS: Message shown when the user tries to perform an action while a help/documentation Web View window is open
 msgid "Paperback cannot perform any actions while Web View is open."
 msgstr ""
@@ -1771,6 +1775,10 @@ msgstr ""
 
 #. TRANSLATORS: Message shown when trying to view a bookmark note but the current position has none
 msgid "No note at the current position."
+msgstr ""
+
+#. TRANSLATORS: Status bar text while a document is being parsed; {} is the document title or file name
+msgid "Loading {}…"
 msgstr ""
 
 #. TRANSLATORS: Status bar label for the current line number, e.g. "Line 5, Character 120, Reading 45%"

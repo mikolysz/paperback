@@ -26,7 +26,9 @@ use wxdragon::{
 use super::rtf_write::{self, RtfFontInfo};
 use super::{
 	main_window::{SLEEP_TIMER_DURATION_MINUTES, SLEEP_TIMER_START_MS},
-	menu_ids, status,
+	menu_ids,
+	parse_registry::{ParseRegistry, PendingParse},
+	status,
 };
 
 pub struct DocumentTab {
@@ -35,6 +37,16 @@ pub struct DocumentTab {
 	pub session: DocumentSession,
 	pub file_path: PathBuf,
 	pub track: bool,
+	/// The open request's sequence number. `tabs` stays sorted by this immutable value so parallel
+	/// parses cannot change tab order.
+	pub seq: u64,
+}
+
+pub struct ReparseInput {
+	pub seq: u64,
+	pub path: String,
+	pub password: String,
+	pub forced_extension: String,
 }
 
 pub fn title_or_filename(title: String, path: &Path) -> String {
@@ -67,6 +79,7 @@ pub struct DocumentManager {
 	last_sound_position: Cell<Option<i64>>,
 	preferred_column: Cell<Option<i64>>,
 	recently_closed: Vec<PathBuf>,
+	parses: ParseRegistry,
 	#[cfg(target_os = "linux")]
 	navigation_key_map: Rc<HashMap<(i32, bool), i32>>,
 }
@@ -88,24 +101,40 @@ impl DocumentManager {
 			last_sound_position: Cell::new(None),
 			preferred_column: Cell::new(None),
 			recently_closed: Vec::new(),
+			parses: ParseRegistry::default(),
 			#[cfg(target_os = "linux")]
 			navigation_key_map: Rc::new(build_navigation_key_map()),
+		}
+	}
+
+	pub const fn parses(&self) -> &ParseRegistry {
+		&self.parses
+	}
+
+	pub const fn parses_mut(&mut self) -> &mut ParseRegistry {
+		&mut self.parses
+	}
+
+	/// Selects the startup restore's remembered active document after the group finishes. If that
+	/// document failed to load, the current selection stays unchanged.
+	pub fn finish_restore_group(&mut self) {
+		if let Some(index) = self.parses.take_restore_active_key().and_then(|key| self.find_tab_by_key(&key)) {
+			self.notebook.set_selection(index);
 		}
 	}
 
 	pub fn add_session_tab(
 		&mut self,
 		self_rc: &Rc<Mutex<Self>>,
-		path: &Path,
+		entry: &PendingParse,
 		session: DocumentSession,
-		password: &str,
-		track: bool,
-		title_override: Option<&str>,
-	) -> bool {
-		if let Some(index) = self.find_tab_by_path(path) {
-			self.notebook.set_selection(index);
-			return true;
-		}
+		select: bool,
+	) -> usize {
+		let path = entry.path.as_path();
+		let password = entry.password.as_str();
+		let track = entry.track;
+		let seq = entry.seq;
+		let title_override = entry.title_override.as_deref();
 		let title = title_override.map_or_else(|| title_or_filename(session.title(), path), ToString::to_string);
 		let panel = Panel::builder(&self.notebook).build();
 		let config = self.config.lock().unwrap();
@@ -133,34 +162,39 @@ impl DocumentManager {
 			config.get_letter_spacing(),
 			config.get_text_alignment(),
 		);
-		self.notebook.add_page(&panel, &title, true, None);
+		let index = self.tabs.partition_point(|t| t.seq < seq);
+		self.notebook.insert_page(index, &panel, &title, select, None);
 		let path_str = path.to_string_lossy();
 		let nav_history = config.get_navigation_history(&path_str);
 		session.set_history(&nav_history.positions, nav_history.index);
-		self.tabs.push(DocumentTab { panel, text_ctrl, session, file_path: path.to_path_buf(), track });
+		self.tabs.insert(index, DocumentTab { panel, text_ctrl, session, file_path: path.to_path_buf(), track, seq });
 		if !password.is_empty() {
 			config.set_document_password(&path_str, password);
 		}
-		let tab_index = self.tabs.len() - 1;
-		let max_pos = self.tabs[tab_index].text_ctrl.get_last_position();
+		let max_pos = self.tabs[index].text_ctrl.get_last_position();
 		let saved_pos = config.get_validated_document_position(&path_str, max_pos);
 		let initial_pos = if saved_pos >= 0 {
-			self.tabs[tab_index].text_ctrl.set_insertion_point(saved_pos);
-			self.tabs[tab_index].text_ctrl.show_position(saved_pos);
+			self.tabs[index].text_ctrl.set_insertion_point(saved_pos);
+			self.tabs[index].text_ctrl.show_position(saved_pos);
 			saved_pos
 		} else {
-			self.tabs[tab_index].text_ctrl.set_insertion_point(0);
-			self.tabs[tab_index].text_ctrl.show_position(0);
+			self.tabs[index].text_ctrl.set_insertion_point(0);
+			self.tabs[index].text_ctrl.show_position(0);
 			0
 		};
-		self.tabs[tab_index].session.set_stable_position(initial_pos);
+		self.tabs[index].session.set_stable_position(initial_pos);
 		if track {
-			config.add_recent_document(&path_str);
+			// Parses finish in any order, but the restored list and the recents menu must both
+			// follow request order: insert relative to the next tracked tab's entry rather than
+			// at the position completion order would give.
+			let successor =
+				self.tabs[index + 1..].iter().find(|t| t.track).map(|t| t.file_path.to_string_lossy().to_string());
+			config.add_recent_document(&path_str, successor.as_deref());
 			config.set_document_opened(&path_str, true);
-			config.add_opened_document(&path_str);
+			config.add_opened_document(&path_str, successor.as_deref());
 		}
 		config.flush();
-		true
+		index
 	}
 
 	pub fn close_document(&mut self, index: usize, save_state: bool) -> bool {
@@ -210,6 +244,9 @@ impl DocumentManager {
 	}
 
 	pub fn close_all_documents(&mut self) {
+		// Closing everything also cancels in-flight opens; otherwise their documents would pop
+		// back in when their parses complete.
+		self.parses.cancel_all();
 		while !self.tabs.is_empty() {
 			self.close_document(0, true);
 		}
@@ -275,8 +312,11 @@ impl DocumentManager {
 	}
 
 	pub fn find_tab_by_path(&self, path: &Path) -> Option<usize> {
-		let target = normalized_path_key(path);
-		self.tabs.iter().position(|tab| normalized_path_key(&tab.file_path) == target)
+		self.find_tab_by_key(&normalized_path_key(path))
+	}
+
+	pub fn find_tab_by_key(&self, key: &str) -> Option<usize> {
+		self.tabs.iter().position(|tab| normalized_path_key(&tab.file_path) == key)
 	}
 
 	pub fn restore_focus(&self) {
@@ -505,25 +545,30 @@ impl DocumentManager {
 		}
 	}
 
-	/// Re-parses every open document with the new `render_tables_inline` setting and refills its
-	/// text control. Re-parsing (rather than transforming in place) keeps every format's table
-	/// rendering identical via the shared parse-time helper. A tab whose re-parse fails is left
-	/// unchanged.
-	pub fn apply_render_tables_inline(&mut self, render_tables_inline: bool) {
-		// Read readability settings and collect each tab's parse inputs (path, password, forced
-		// format) under a single config lock, so we don't re-lock per tab while mutating the tabs.
-		let (rf, line_spacing, bg_color, text_alignment, letter_spacing, paragraph_spacing, parse_inputs) = {
+	pub fn collect_reparse_inputs(&self) -> Vec<ReparseInput> {
+		let cfg = self.config.lock().unwrap();
+		self.tabs
+			.iter()
+			.map(|tab| {
+				let path_str = tab.file_path.to_string_lossy().to_string();
+				ReparseInput {
+					seq: tab.seq,
+					password: cfg.get_document_password(&path_str),
+					forced_extension: cfg.get_document_format(&path_str),
+					path: path_str,
+				}
+			})
+			.collect()
+	}
+
+	/// Replaces the session for `seq` and preserves the caret's structural position. Results for
+	/// closed or reopened tabs are discarded because reopened tabs have new sequence numbers.
+	pub fn replace_tab_session(&mut self, seq: u64, session: DocumentSession) {
+		let Some(tab) = self.tabs.iter_mut().find(|t| t.seq == seq) else {
+			return;
+		};
+		let (rf, line_spacing, bg_color, text_alignment, letter_spacing, paragraph_spacing) = {
 			let cfg = self.config.lock().unwrap();
-			let parse_inputs: Vec<(String, String, String)> = self
-				.tabs
-				.iter()
-				.map(|tab| {
-					let path_str = tab.file_path.to_string_lossy().to_string();
-					let password = cfg.get_document_password(&path_str);
-					let forced_extension = cfg.get_document_format(&path_str);
-					(path_str, password, forced_extension)
-				})
-				.collect();
 			(
 				cfg.get_readability_font(),
 				cfg.get_line_spacing(),
@@ -531,67 +576,53 @@ impl DocumentManager {
 				cfg.get_text_alignment(),
 				cfg.get_letter_spacing(),
 				cfg.get_paragraph_spacing(),
-				parse_inputs,
 			)
 		};
-		for (tab, (path_str, password, forced_extension)) in self.tabs.iter_mut().zip(parse_inputs) {
-			let current_pos = tab.text_ctrl.get_insertion_point();
-			let pos = usize::try_from(current_pos.max(0)).unwrap_or(0);
-
-			// Find the nearest anchor at-or-before the cursor using the full id_positions key
-			// (unlike nearest_fragment_before, which strips the "path#" prefix for epub keys
-			// making the subsequent lookup fail). Record the within-block offset so the cursor
-			// lands at the same structural position after reparsing. Fallback: percentage-based
-			// position for formats with no anchors.
-			let stable_anchor = {
-				let id_positions = &tab.session.handle().document().id_positions;
-				id_positions
-					.iter()
-					.filter(|&(_, &off)| off <= pos)
-					.max_by_key(|&(_, &off)| off)
-					.map(|(key, &anchor_off)| (key.clone(), pos.saturating_sub(anchor_off)))
-			};
-			let fallback_percent = tab.session.get_status_info(current_pos).percentage;
-
-			let new_session = match DocumentSession::new(&path_str, &password, &forced_extension, render_tables_inline)
-			{
-				Ok(session) => session,
-				Err(err) => {
-					tracing::error!(path = %path_str, error = %err, "failed to re-parse document for render_tables_inline toggle");
-					continue;
-				}
-			};
-			tab.session = new_session;
-			let content = tab.session.content();
-			fill_text_ctrl_with_formatting(tab.text_ctrl, &tab.session, &content);
-			if let Some(font) = build_font_from_readability(&rf) {
-				tab.text_ctrl.set_font(&font);
-			}
-			apply_foreground_color_to_ctrl(tab.text_ctrl, rf.color);
-			apply_bg_color_to_ctrl(tab.text_ctrl, bg_color);
-			apply_readability_format_to_ctrl(
-				tab.text_ctrl,
-				line_spacing,
-				paragraph_spacing,
-				letter_spacing,
-				text_alignment,
-			);
-			tab.panel.layout();
-			let max_pos = tab.text_ctrl.get_last_position();
-
-			let restored_pos = if let Some((ref key, within)) = stable_anchor {
-				match tab.session.handle().document().id_positions.get(key) {
-					Some(&new_anchor_off) => i64::try_from(new_anchor_off + within).unwrap_or(0).clamp(0, max_pos),
-					None => tab.session.position_from_percent(fallback_percent).clamp(0, max_pos),
-				}
-			} else {
-				tab.session.position_from_percent(fallback_percent).clamp(0, max_pos)
-			};
-
-			tab.text_ctrl.set_insertion_point(restored_pos);
-			tab.text_ctrl.show_position(restored_pos);
-			tab.session.set_stable_position(restored_pos);
+		// Compute the anchor at swap time so reading during the re-parse is preserved. Use the full
+		// `id_positions` key: `nearest_fragment_before` strips EPUB's `path#` prefix, so its key
+		// cannot locate the same anchor in the new session. Formats without anchors fall back to a
+		// percentage-based position.
+		let current_pos = tab.text_ctrl.get_insertion_point();
+		let pos = usize::try_from(current_pos.max(0)).unwrap_or(0);
+		let stable_anchor = {
+			let id_positions = &tab.session.handle().document().id_positions;
+			id_positions
+				.iter()
+				.filter(|&(_, &off)| off <= pos)
+				.max_by_key(|&(_, &off)| off)
+				.map(|(key, &anchor_off)| (key.clone(), pos.saturating_sub(anchor_off)))
+		};
+		let fallback_percent = tab.session.get_status_info(current_pos).percentage;
+		tab.session = session;
+		let content = tab.session.content();
+		fill_text_ctrl_with_formatting(tab.text_ctrl, &tab.session, &content);
+		if let Some(font) = build_font_from_readability(&rf) {
+			tab.text_ctrl.set_font(&font);
 		}
+		apply_foreground_color_to_ctrl(tab.text_ctrl, rf.color);
+		apply_bg_color_to_ctrl(tab.text_ctrl, bg_color);
+		apply_readability_format_to_ctrl(
+			tab.text_ctrl,
+			line_spacing,
+			paragraph_spacing,
+			letter_spacing,
+			text_alignment,
+		);
+		tab.panel.layout();
+		let max_pos = tab.text_ctrl.get_last_position();
+
+		let restored_pos = if let Some((key, within)) = stable_anchor {
+			match tab.session.handle().document().id_positions.get(&key) {
+				Some(&new_anchor_off) => i64::try_from(new_anchor_off + within).unwrap_or(0).clamp(0, max_pos),
+				None => tab.session.position_from_percent(fallback_percent).clamp(0, max_pos),
+			}
+		} else {
+			tab.session.position_from_percent(fallback_percent).clamp(0, max_pos)
+		};
+
+		tab.text_ctrl.set_insertion_point(restored_pos);
+		tab.text_ctrl.show_position(restored_pos);
+		tab.session.set_stable_position(restored_pos);
 	}
 
 	fn build_text_ctrl(
@@ -727,7 +758,7 @@ fn navigate_line_by_column(text_ctrl: TextCtrl, going_down: bool, pref_col: Opti
 	Some((new_pos, col))
 }
 
-fn normalized_path_key(path: &Path) -> String {
+pub(super) fn normalized_path_key(path: &Path) -> String {
 	let normalized = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 	let value = normalized.to_string_lossy().to_string();
 	#[cfg(target_os = "windows")]

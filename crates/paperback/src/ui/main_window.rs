@@ -1,14 +1,12 @@
-#[cfg(target_os = "windows")]
-use std::cell::RefCell;
 use std::{
-	cell::Cell,
+	cell::{Cell, RefCell},
 	env,
 	path::Path,
 	process,
 	rc::Rc,
 	sync::{
 		Mutex,
-		atomic::{AtomicI32, AtomicI64, Ordering},
+		atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering},
 	},
 	time::{SystemTime, UNIX_EPOCH},
 };
@@ -27,13 +25,14 @@ use super::tray;
 use super::{
 	dialogs,
 	document_manager::{
-		DocumentManager, build_document_load_error_message, build_font_from_readability, display_title,
-		prompt_for_password, show_error_dialog,
+		DocumentManager, ReparseInput, build_document_load_error_message, build_font_from_readability, display_title,
+		normalized_path_key, prompt_for_password, show_error_dialog,
 	},
 	find::{self, FindDialogState},
 	help::{self, MAIN_WINDOW_PTR},
 	menu, menu_ids,
 	navigation::{self, MarkerNavTarget},
+	parse_registry::PendingParse,
 	status,
 };
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -48,6 +47,9 @@ const KEY_NUMPAD_DELETE: i32 = 330;
 
 pub static SLEEP_TIMER_START_MS: AtomicI64 = AtomicI64::new(0);
 pub static SLEEP_TIMER_DURATION_MINUTES: AtomicI32 = AtomicI32::new(0);
+
+/// Prevents background-parse completions from touching widgets or config after final shutdown.
+pub static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// How a document open should present itself. The default is a tracked, user-initiated open with
 /// no title or caret override.
@@ -84,6 +86,9 @@ pub struct MainWindow {
 	_tray_state: Rc<Mutex<Option<tray::TrayState>>>,
 	_live_region_label: StaticText,
 	_find_dialog: Rc<Mutex<Option<FindDialogState>>>,
+	/// Parse completions deferred to avoid re-locking a mutex held below a modal dialog's nested
+	/// event loop. A frame-owned timer retries them after the modal closes; see `run_or_defer`.
+	deferred_completions: Rc<RefCell<Vec<Box<dyn FnOnce()>>>>,
 	#[cfg(target_os = "windows")]
 	_hotkey_handle: Rc<RefCell<Option<HotkeyHandle>>>,
 }
@@ -221,9 +226,14 @@ impl MainWindow {
 						}
 					}
 				}
+				// Reaching this point means macOS did not veto the close.
+				SHUTTING_DOWN.store(true, Ordering::SeqCst);
 				event.skip(true);
 			});
 		}
+		frame.on_destroy(move |_event| {
+			SHUTTING_DOWN.store(true, Ordering::SeqCst);
+		});
 		#[cfg(target_os = "windows")]
 		{
 			let tray_for_destroy = Rc::clone(&tray_state);
@@ -234,6 +244,32 @@ impl MainWindow {
 			});
 		}
 		Self::schedule_restore_documents(frame, Rc::clone(&doc_manager), Rc::clone(&config));
+		let deferred_completions: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> = Rc::new(RefCell::new(Vec::new()));
+		// Timer ticks continue inside modal event loops, but the lock probe keeps completions
+		// deferred until the first tick after the modal closes.
+		let drain_timer = Rc::new(Timer::new(&frame));
+		let deferred = Rc::clone(&deferred_completions);
+		drain_timer.on_tick(move |_| {
+			if deferred.borrow().is_empty() || SHUTTING_DOWN.load(Ordering::SeqCst) {
+				return;
+			}
+			let Some(window) = super::app::main_window_from_ptr() else {
+				return;
+			};
+			if window.doc_manager.try_lock().is_err() || window.config.try_lock().is_err() {
+				return;
+			}
+			let ready: Vec<_> = deferred.borrow_mut().drain(..).collect();
+			for completion in ready {
+				completion();
+			}
+		});
+		drain_timer.start(150, false);
+		// Keep the timer in this frame-bound closure. A wx timer that outlives its frame continues
+		// dispatching into the freed event handler.
+		frame.on_destroy(move |_event| {
+			drain_timer.stop();
+		});
 		Self {
 			frame,
 			doc_manager,
@@ -242,6 +278,7 @@ impl MainWindow {
 			_tray_state: tray_state,
 			_live_region_label: live_region_label,
 			_find_dialog: find_dialog,
+			deferred_completions,
 			#[cfg(target_os = "windows")]
 			_hotkey_handle: hotkey_handle,
 		}
@@ -270,13 +307,19 @@ impl MainWindow {
 		self.request_open(path, OpenRequest::default())
 	}
 
-	/// Opens a document and brings the whole window in line with the result: the tab, the title,
-	/// the status bar, focus, and the menus that depend on a document being open. Every open goes
-	/// through here, so no caller has to remember that list. Returns `false` if the document could
-	/// not be opened.
+	/// Submits a document open. Everything that needs the user -- choosing a format, importing a
+	/// sidecar file -- happens here, on the UI thread, before the parse is handed to a worker
+	/// thread; `finish_parse` applies the result. Returns `false` only for a file that cannot be
+	/// opened at all, since a parse failure is not known yet.
 	pub(super) fn request_open(&self, path: &Path, request: OpenRequest) -> bool {
+		// Resolving the format writes it to config, so this must precede reading the parse inputs
+		// below. Startup restore resolves its whole list up front, which makes this a no-op there.
 		if !dialogs::ensure_parser_ready_for_path(&self.frame, path, &self.config) {
 			return false;
+		}
+		// The "Open As" prompt's nested event loop may have closed the window.
+		if SHUTTING_DOWN.load(Ordering::SeqCst) {
+			return true;
 		}
 		let notebook = *self.doc_manager.lock().unwrap().notebook();
 		if !path.exists() {
@@ -286,9 +329,11 @@ impl MainWindow {
 			show_error_dialog(&notebook, &message, &t("Error"));
 			return false;
 		}
-		{
-			let dm = self.doc_manager.lock().unwrap();
-			if let Some(index) = dm.find_tab_by_path(path) {
+		let key = normalized_path_key(path);
+		let is_restore = request.is_restore;
+		let seq = {
+			let mut dm = self.doc_manager.lock().unwrap();
+			if let Some(index) = dm.find_tab_by_key(&key) {
 				// Bring the existing tab forward rather than opening the same document twice.
 				dm.notebook().set_selection(index);
 				if let Some(caret) = request.initial_caret
@@ -297,13 +342,43 @@ impl MainWindow {
 					tab.text_ctrl.set_insertion_point(caret);
 					tab.text_ctrl.show_position(caret);
 				}
+				if !is_restore {
+					// Do not let startup restore override the user's selection.
+					dm.parses_mut().set_restore_active_key(None);
+				}
 				dm.restore_focus();
 				update_title_from_manager(&self.frame, &dm);
 				return true;
 			}
-		}
+			// Reuse the pending open and apply the latest focus and caret request when it finishes.
+			if let Some(pending) = dm.parses_mut().by_key_mut(&key) {
+				if !is_restore {
+					pending.focus_when_done = true;
+				}
+				if request.initial_caret.is_some() {
+					pending.initial_caret = request.initial_caret;
+				}
+				return true;
+			}
+			// Register before opening a modal. Its nested event loop may submit the same path again
+			// through IPC or startup restore. The sidecar import below may still change parse inputs.
+			dm.parses_mut().register(PendingParse {
+				seq: 0,
+				path: path.to_path_buf(),
+				key,
+				track: request.track,
+				is_restore,
+				title_override: request.title_override,
+				initial_caret: request.initial_caret,
+				focus_when_done: false,
+				password: String::new(),
+				password_attempted: false,
+				forced_extension: String::new(),
+				render_tables_inline: true,
+			})
+		};
 		let import_path = path.with_extension("paperback");
-		if !request.is_restore && import_path.exists() {
+		if !is_restore && import_path.exists() {
 			// TRANSLATORS: Prompt asking whether to import a document's previously saved settings and bookmarks found alongside it
 			let message = t("A .paperback file was found for this document. Would you like to import it?");
 			// TRANSLATORS: Title of the dialog prompting to import a document's saved settings and bookmarks
@@ -315,10 +390,14 @@ impl MainWindow {
 				let config = self.config.lock().unwrap();
 				config.import_settings_from_file(&path.to_string_lossy(), import_path.to_str().unwrap());
 			}
+			// The import prompt's nested event loop may have closed the window.
+			if SHUTTING_DOWN.load(Ordering::SeqCst) {
+				return true;
+			}
 		}
-		let path_str = path.to_string_lossy().to_string();
-		let (mut password, forced_extension, render_tables_inline) = {
+		let (password, forced_extension, render_tables_inline) = {
 			let config = self.config.lock().unwrap();
+			let path_str = path.to_string_lossy();
 			config.refresh_document_hash(&path_str);
 			(
 				config.get_document_password(&path_str),
@@ -327,55 +406,186 @@ impl MainWindow {
 			)
 		};
 		tracing::info!(path = %path.display(), "opening document");
-		let mut result = DocumentSession::new(&path_str, &password, &forced_extension, render_tables_inline);
-		// A stored password that no longer opens the document is indistinguishable from having
-		// none, so clear it and ask once before giving up.
-		if matches!(&result, Err(err) if err.starts_with(PASSWORD_REQUIRED_ERROR_PREFIX)) {
-			self.config.lock().unwrap().set_document_password(&path_str, "");
-			let Some(entered) = prompt_for_password(&notebook, path) else {
-				// TRANSLATORS: Error shown when the user dismisses the password prompt for an encrypted document without entering one
-				show_error_dialog(&notebook, &t("Password is required."), &t("Error"));
-				return false;
-			};
-			password = entered;
-			result = DocumentSession::new(&path_str, &password, &forced_extension, render_tables_inline);
-		}
-		let session = match result {
-			Ok(session) => session,
-			Err(err) => {
-				tracing::error!(path = %path.display(), error = %err, "failed to open document");
-				show_error_dialog(&notebook, &build_document_load_error_message(path, &err), &t("Error"));
-				return false;
-			}
-		};
-		{
+		let loading = {
 			let mut dm = self.doc_manager.lock().unwrap();
-			dm.add_session_tab(
-				&self.doc_manager,
-				path,
-				session,
-				&password,
-				request.track,
-				request.title_override.as_deref(),
-			);
-			if let Some(caret) = request.initial_caret
-				&& let Some(tab) = dm.active_tab()
-			{
-				tab.text_ctrl.set_insertion_point(caret);
-				tab.text_ctrl.show_position(caret);
+			// The import prompt's event loop may also have run a Close All that cancelled this open.
+			let Some(entry) = dm.parses_mut().by_seq_mut(seq) else {
+				return true;
+			};
+			entry.password.clone_from(&password);
+			entry.forced_extension.clone_from(&forced_extension);
+			entry.render_tables_inline = render_tables_inline;
+			dm.parses().busy_status_text()
+		};
+		if let Some(loading) = loading {
+			self.frame.set_status_text(&loading, 0);
+		}
+		spawn_parse(seq, path.to_string_lossy().to_string(), password, forced_extension, render_tables_inline);
+		true
+	}
+
+	/// Runs a parse completion unless a modal event loop re-entered the UI while an outer handler
+	/// holds a required mutex. Since standard mutexes are not reentrant, the drain timer must retry
+	/// the completion after that handler returns.
+	fn run_or_defer(&self, completion: Box<dyn FnOnce()>) {
+		if self.doc_manager.try_lock().is_ok() && self.config.try_lock().is_ok() {
+			completion();
+		} else {
+			self.deferred_completions.borrow_mut().push(completion);
+		}
+	}
+
+	/// Handles a background parse on the UI thread. It must release the document-manager lock
+	/// before opening a modal or calling `update_recent_documents_menu`, which locks the manager.
+	pub(super) fn finish_parse(&self, seq: u64, result: Result<DocumentSession, String>) {
+		match result {
+			Ok(session) => {
+				let (is_restore, restore_done) = {
+					let mut dm = self.doc_manager.lock().unwrap();
+					// A missing entry means the open was cancelled; discard the result.
+					let Some(entry) = dm.parses_mut().by_seq_mut(seq) else {
+						return;
+					};
+					// Re-parse if the table setting changed while this session was being built.
+					let current = self.config.lock().unwrap().get_app_bool("render_tables_inline", true);
+					if entry.render_tables_inline != current {
+						entry.render_tables_inline = current;
+						spawn_parse(
+							seq,
+							entry.path.to_string_lossy().to_string(),
+							entry.password.clone(),
+							entry.forced_extension.clone(),
+							current,
+						);
+						return;
+					}
+					let Some((entry, restore_done)) = dm.parses_mut().take(seq) else {
+						return;
+					};
+					let select = !entry.is_restore
+						|| entry.focus_when_done
+						|| dm.parses().restore_active_key() == Some(entry.key.as_str());
+					let index = dm.add_session_tab(&self.doc_manager, &entry, session, select);
+					if let Some(caret) = entry.initial_caret {
+						let tab = dm.get_tab(index).unwrap();
+						tab.text_ctrl.set_insertion_point(caret);
+						tab.text_ctrl.show_position(caret);
+					}
+					if restore_done {
+						dm.finish_restore_group();
+						dm.restore_focus();
+					} else if select {
+						dm.restore_focus();
+					}
+					update_title_from_manager(&self.frame, &dm);
+					(entry.is_restore, restore_done)
+				};
+				// Rebuild recent documents once per user open or restore group, not once per restored tab.
+				if !is_restore || restore_done {
+					self.update_recent_documents_menu();
+				} else {
+					menu::update_menu_item_states(&self.frame, true);
+				}
 			}
-			if !request.is_restore {
-				dm.restore_focus();
+			Err(err) => {
+				let (notebook, path, prompt_password) = {
+					let mut dm = self.doc_manager.lock().unwrap();
+					let notebook = *dm.notebook();
+					// A missing entry means the open was cancelled; discard the result.
+					let Some(entry) = dm.parses_mut().by_seq_mut(seq) else {
+						return;
+					};
+					let prompt_password = err.starts_with(PASSWORD_REQUIRED_ERROR_PREFIX) && !entry.password_attempted;
+					(notebook, entry.path.clone(), prompt_password)
+				};
+				if prompt_password {
+					self.config.lock().unwrap().set_document_password(&path.to_string_lossy(), "");
+					let password = prompt_for_password(&notebook, &path);
+					// The password prompt's nested event loop may have closed the window.
+					if SHUTTING_DOWN.load(Ordering::SeqCst) {
+						return;
+					}
+					if let Some(password) = password {
+						let (path_str, forced_extension, render_tables_inline) = {
+							let mut dm = self.doc_manager.lock().unwrap();
+							// The prompt's event loop may also have run a Close All that cancelled this open.
+							let Some(entry) = dm.parses_mut().by_seq_mut(seq) else {
+								return;
+							};
+							entry.password.clone_from(&password);
+							entry.password_attempted = true;
+							(
+								entry.path.to_string_lossy().to_string(),
+								entry.forced_extension.clone(),
+								entry.render_tables_inline,
+							)
+						};
+						spawn_parse(seq, path_str, password, forced_extension, render_tables_inline);
+						return;
+					}
+				}
+				let Some((_, restore_done)) = self.doc_manager.lock().unwrap().parses_mut().take(seq) else {
+					return;
+				};
+				let message = if prompt_password {
+					// TRANSLATORS: Error shown when the user dismisses the password prompt for an encrypted document without entering one
+					t("Password is required.")
+				} else {
+					tracing::error!(path = %path.display(), error = %err, "failed to open document");
+					build_document_load_error_message(&path, &err)
+				};
+				show_error_dialog(&notebook, &message, &t("Error"));
+				if SHUTTING_DOWN.load(Ordering::SeqCst) {
+					return;
+				}
+				let mut dm = self.doc_manager.lock().unwrap();
+				if restore_done {
+					dm.finish_restore_group();
+					dm.restore_focus();
+				}
+				update_title_from_manager(&self.frame, &dm);
 			}
+		}
+	}
+
+	/// Re-parses every open document after `render_tables_inline` changes. This uses the shared
+	/// parse-time renderer; a failed re-parse leaves its tab unchanged.
+	pub(super) fn request_render_tables_reparse(&self, render_tables_inline: bool) {
+		let (inputs, generation) = {
+			let mut dm = self.doc_manager.lock().unwrap();
+			let inputs = dm.collect_reparse_inputs();
+			let generation = dm.parses_mut().begin_reparse_batch(inputs.len());
+			(inputs, generation)
+		};
+		if inputs.is_empty() {
+			return;
+		}
+		// TRANSLATORS: Status bar text while open documents are being re-parsed after a settings change
+		self.frame.set_status_text(&t("Reloading documents…"), 0);
+		for input in inputs {
+			std::thread::spawn(move || {
+				let result =
+					DocumentSession::new(&input.path, &input.password, &input.forced_extension, render_tables_inline);
+				post_completion(move |window| window.finish_reparse(generation, input, result));
+			});
+		}
+	}
+
+	pub(super) fn finish_reparse(&self, generation: u64, input: ReparseInput, result: Result<DocumentSession, String>) {
+		let mut dm = self.doc_manager.lock().unwrap();
+		// Discard results from an older setting change.
+		let Some(batch_finished) = dm.parses_mut().reparse_job_done(generation) else {
+			return;
+		};
+		match result {
+			Ok(session) => dm.replace_tab_session(input.seq, session),
+			Err(err) => {
+				tracing::error!(path = %input.path, error = %err, "failed to re-parse document for render_tables_inline toggle");
+			}
+		}
+		if batch_finished {
 			update_title_from_manager(&self.frame, &dm);
 		}
-		// Startup restore rebuilds the menu bar once for the whole group rather than per document.
-		if request.is_restore {
-			menu::update_menu_item_states(&self.frame, true);
-		} else {
-			self.update_recent_documents_menu();
-		}
-		true
 	}
 
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -566,29 +776,38 @@ impl MainWindow {
 			}
 			state.restored = true;
 			drop(state);
-			let pre_restore_active = doc_manager.lock().unwrap().active_tab_index();
 			let active_path = config.lock().unwrap().get_app_string("active_document", "");
 			let paths = config.lock().unwrap().get_opened_documents_existing();
 			tracing::info!(count = paths.len(), "restoring previously open documents");
+			{
+				// A document opened before restore, through the CLI or IPC, keeps its selection.
+				let mut dm = doc_manager.lock().unwrap();
+				if dm.tab_count() == 0 && !dm.parses().has_pending() && !active_path.is_empty() {
+					dm.parses_mut().set_restore_active_key(Some(normalized_path_key(Path::new(&active_path))));
+				}
+			}
 			let window = super::app::main_window_from_ptr().expect("idle events only fire after the app is built");
+			// Resolve every "Open As" prompt before submitting any parse. Otherwise an earlier parse
+			// could finish inside a later prompt's event loop and appear to end the restore group.
+			// `request_open` re-checks each path, but a resolved format is saved to config, so that
+			// check finds it and opens no dialog.
+			let mut ready = Vec::new();
 			for path in paths {
-				window.request_open(Path::new(&path), OpenRequest { is_restore: true, ..OpenRequest::default() });
+				// A prompt's nested event loop may have closed the window.
+				if SHUTTING_DOWN.load(Ordering::SeqCst) {
+					return;
+				}
+				if dialogs::ensure_parser_ready_for_path(&frame, Path::new(&path), &config) {
+					ready.push(path);
+				}
 			}
-			let mut target_idx = pre_restore_active;
-			if target_idx.is_none() && !active_path.is_empty() {
-				target_idx = doc_manager.lock().unwrap().find_tab_by_path(Path::new(&active_path));
+			if SHUTTING_DOWN.load(Ordering::SeqCst) {
+				return;
 			}
-			if let Some(idx) = target_idx {
-				doc_manager.lock().unwrap().notebook().set_selection(idx);
+			for path in &ready {
+				window.request_open(Path::new(path), OpenRequest { is_restore: true, ..OpenRequest::default() });
 			}
-			let dm_ref = doc_manager.lock().unwrap();
-			update_title_from_manager(&frame, &dm_ref);
-			let has_docs = dm_ref.tab_count() > 0;
-			let menu_bar = menu::create_menu_bar(&config.lock().unwrap());
-			frame.set_menu_bar(menu_bar);
-			menu::update_menu_item_states(&frame, has_docs);
 			menu::update_reopen_state(&frame, false);
-			dm_ref.restore_focus();
 		});
 	}
 
@@ -1672,8 +1891,9 @@ impl MainWindow {
 						}
 					}
 					if render_tables_inline_changed {
-						let mut dm_ref = dm.lock().unwrap();
-						dm_ref.apply_render_tables_inline(options_render_tables_inline);
+						let window =
+							super::app::main_window_from_ptr().expect("menu events only fire after the app is built");
+						window.request_render_tables_reparse(options_render_tables_inline);
 					}
 					let options_compact_menu = options.compact_go_menu;
 					if current_language != options.language || old_compact_menu != options_compact_menu {
@@ -1819,6 +2039,28 @@ impl MainWindow {
 	}
 }
 
+fn spawn_parse(seq: u64, path: String, password: String, forced_extension: String, render_tables_inline: bool) {
+	std::thread::spawn(move || {
+		let result = DocumentSession::new(&path, &password, &forced_extension, render_tables_inline);
+		post_completion(move |window| window.finish_parse(seq, result));
+	});
+}
+
+/// Posts a parse result to the UI thread. The `Send` closure resolves the non-`Send` window only
+/// after reaching that thread, then `run_or_defer` waits out any lock-holding modal.
+fn post_completion(completion: impl FnOnce(&'static MainWindow) + Send + 'static) {
+	call_after(Box::new(move || {
+		if SHUTTING_DOWN.load(Ordering::SeqCst) {
+			return;
+		}
+		let Some(window) = super::app::main_window_from_ptr() else {
+			return;
+		};
+		window.run_or_defer(Box::new(move || completion(window)));
+	}));
+	wake_up_idle();
+}
+
 /// Close the active document, announcing the newly focused document for screen readers.
 ///
 /// The `set_selection` inside `close_document` fires `on_page_changing` while the
@@ -1847,11 +2089,14 @@ fn update_title_from_manager(frame: &Frame, dm: &DocumentManager) {
 		// TRANSLATORS: Main window title when no document is open
 		frame.set_title(&t("Paperback"));
 	}
-	let mut status_text = dm.active_tab().map_or_else(
-		// TRANSLATORS: Default status bar text when no document is open
-		|| t("Ready"),
-		|tab| status::format_status_text(&tab.session.get_status_info(tab.text_ctrl.get_insertion_point())),
-	);
+	// Keep loading status visible until every pending parse finishes.
+	let mut status_text = dm.parses().busy_status_text().unwrap_or_else(|| {
+		dm.active_tab().map_or_else(
+			// TRANSLATORS: Default status bar text when no document is open
+			|| t("Ready"),
+			|tab| status::format_status_text(&tab.session.get_status_info(tab.text_ctrl.get_insertion_point())),
+		)
+	});
 	let sleep_start = SLEEP_TIMER_START_MS.load(Ordering::SeqCst);
 	if sleep_start > 0 {
 		let sleep_duration = SLEEP_TIMER_DURATION_MINUTES.load(Ordering::SeqCst);

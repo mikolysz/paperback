@@ -7,6 +7,7 @@ mod main_window;
 mod menu;
 mod menu_ids;
 mod navigation;
+mod parse_registry;
 mod rtf_write;
 mod sounds;
 mod status;

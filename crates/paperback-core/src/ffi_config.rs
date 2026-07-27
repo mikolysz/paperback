@@ -58,7 +58,7 @@ impl ConfigManagerFfi {
 	}
 
 	pub fn add_recent_document(&self, path: String) {
-		self.inner.lock().unwrap().add_recent_document(&path);
+		self.inner.lock().unwrap().add_recent_document(&path, None);
 	}
 
 	pub fn get_recent_documents(&self) -> Vec<String> {
@@ -66,7 +66,7 @@ impl ConfigManagerFfi {
 	}
 
 	pub fn add_opened_document(&self, path: String) {
-		self.inner.lock().unwrap().add_opened_document(&path);
+		self.inner.lock().unwrap().add_opened_document(&path, None);
 	}
 
 	pub fn remove_opened_document(&self, path: String) {
