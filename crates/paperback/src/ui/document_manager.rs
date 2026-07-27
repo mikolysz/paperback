@@ -34,6 +34,9 @@ pub struct DocumentTab {
 	pub text_ctrl: TextCtrl,
 	pub session: DocumentSession,
 	pub file_path: PathBuf,
+	/// Identity of the document for tab lookups, cached because `normalized_path_key` canonicalizes
+	/// through the filesystem while every lookup scans all tabs.
+	pub key: String,
 	pub track: bool,
 }
 
@@ -234,7 +237,14 @@ impl DocumentManager {
 		let path_str = path.to_string_lossy();
 		let nav_history = config.get_navigation_history(&path_str);
 		session.set_history(&nav_history.positions, nav_history.index);
-		self.tabs.push(DocumentTab { panel, text_ctrl, session, file_path: path.to_path_buf(), track });
+		self.tabs.push(DocumentTab {
+			panel,
+			text_ctrl,
+			session,
+			file_path: path.to_path_buf(),
+			key: normalized_path_key(path),
+			track,
+		});
 		if !password.is_empty() {
 			config.set_document_password(&path_str, password);
 		}
@@ -365,8 +375,11 @@ impl DocumentManager {
 	}
 
 	pub fn find_tab_by_path(&self, path: &Path) -> Option<usize> {
-		let target = normalized_path_key(path);
-		self.tabs.iter().position(|tab| normalized_path_key(&tab.file_path) == target)
+		self.find_tab_by_key(&normalized_path_key(path))
+	}
+
+	pub fn find_tab_by_key(&self, key: &str) -> Option<usize> {
+		self.tabs.iter().position(|tab| tab.key == key)
 	}
 
 	pub fn restore_focus(&self) {
