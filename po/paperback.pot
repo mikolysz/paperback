@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: paperback 0.8.5\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-31 04:53+0200\n"
+"POT-Creation-Date: 2026-07-31 04:54+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -264,6 +264,10 @@ msgstr ""
 
 #. TRANSLATORS: Label for the numeric percentage entry field
 msgid "P&ercent:"
+msgstr ""
+
+#. TRANSLATORS: Error shown when the user picks a file format from the "Open As" dialog that this parser build doesn't support
+msgid "Unsupported format selected."
 msgstr ""
 
 #. TRANSLATORS: Title of the Open As dialog
@@ -739,24 +743,12 @@ msgstr ""
 msgid "Failed to open donation page in browser."
 msgstr ""
 
-#. TRANSLATORS: Error shown when the user picks a file format from the "Open As" dialog that this parser build doesn't support
-msgid "Unsupported format selected."
-msgstr ""
-
 #. TRANSLATORS: Main window title when no document is open
 msgid "Paperback"
 msgstr ""
 
 #. TRANSLATORS: Message shown when the user tries to perform an action while a help/documentation Web View window is open
 msgid "Paperback cannot perform any actions while Web View is open."
-msgstr ""
-
-#. TRANSLATORS: Window title when a document is open; {} is the document title
-msgid "Paperback - {}"
-msgstr ""
-
-#. TRANSLATORS: Status bar character count; {} is the number of characters
-msgid "{} chars"
 msgstr ""
 
 #. TRANSLATORS: Title of the file picker dialog shown when opening a document
@@ -873,6 +865,10 @@ msgstr ""
 
 #. TRANSLATORS: Announced when opening "All Documents" while the recent-documents list is empty
 msgid "No recent documents."
+msgstr ""
+
+#. TRANSLATORS: Window title when a document is open; {} is the document title
+msgid "Paperback - {}"
 msgstr ""
 
 #. TRANSLATORS: Menu item label to go to the previous section
@@ -2120,6 +2116,9 @@ msgid "Unknown update file format."
 msgstr ""
 
 msgid "&Password:"
+msgstr ""
+
+msgid "{} chars"
 msgstr ""
 
 msgid "Go To…"

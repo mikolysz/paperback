@@ -1,6 +1,6 @@
 use std::{
 	env, fs,
-	path::{Path, PathBuf},
+	path::PathBuf,
 	process::Command,
 	rc::Rc,
 	sync::{
@@ -13,7 +13,7 @@ mod lang_readmes {
 	include!(concat!(env!("OUT_DIR"), "/lang_readmes.rs"));
 }
 
-use paperback_core::{config::ConfigManager, parser, version};
+use paperback_core::{config::ConfigManager, version};
 use patois::t;
 use ship_shape::{UpdateChannel as ShipChannel, UpdaterConfig};
 use wx_utils::show_error;
@@ -137,7 +137,7 @@ pub fn handle_view_help_paperback(
 		show_error(frame, t("readme.html not found. Please ensure the application was built properly."), &t("Error"));
 		return false;
 	}
-	if !ensure_parser_ready_for_path(frame, &path, config) {
+	if !dialogs::ensure_parser_ready_for_path(frame, &path, config) {
 		return false;
 	}
 	doc_manager.lock().unwrap().open_help_file(doc_manager, &path)
@@ -150,36 +150,4 @@ pub fn handle_donate(frame: &Frame) {
 		// TRANSLATORS: Error shown when the OS default web browser could not be launched to open the donation page
 		show_error(frame, t("Failed to open donation page in browser."), &t("Error"));
 	}
-}
-
-fn ensure_parser_ready_for_path(frame: &Frame, path: &Path, config: &Rc<Mutex<ConfigManager>>) -> bool {
-	let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
-	if extension.is_empty() || parser::parser_supports_extension(extension) {
-		return true;
-	}
-	let cfg = config.lock().unwrap();
-	ensure_parser_for_unknown_file(frame, path, &cfg)
-}
-
-fn ensure_parser_for_unknown_file(parent: &Frame, path: &Path, config: &ConfigManager) -> bool {
-	let path_str = path.to_string_lossy();
-	let saved_format = config.get_document_format(&path_str);
-	if !saved_format.is_empty() && parser::parser_supports_extension(&saved_format) {
-		return true;
-	}
-	let Some(format) = dialogs::show_open_as_dialog(parent, path) else {
-		return false;
-	};
-	if !parser::parser_supports_extension(&format) {
-		// TRANSLATORS: Error shown when the user picks a file format from the "Open As" dialog that this parser build doesn't support
-		let message = t("Unsupported format selected.");
-		let title = t("Error");
-		let dialog = MessageDialog::builder(parent, &message, &title)
-			.with_style(MessageDialogStyle::OK | MessageDialogStyle::IconError | MessageDialogStyle::Centre)
-			.build();
-		dialog.show_modal();
-		return false;
-	}
-	config.set_document_format(&path_str, &format);
-	true
 }

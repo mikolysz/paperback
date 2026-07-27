@@ -266,7 +266,14 @@ impl DocumentManager {
 		}
 		if let Some(tab) = self.tabs.get(index) {
 			tracing::info!(path = %tab.file_path.display(), "closing document");
-			self.recently_closed.push(tab.file_path.clone());
+			// Only tracked documents are reopenable: synthetic tabs (help, View
+			// Source) point at temp files, and reopening one through the generic
+			// open path would treat it as a regular document — tracking it,
+			// adding it to the recents menu, and restoring it on next launch
+			// under its raw internal filename.
+			if tab.track {
+				self.recently_closed.push(tab.file_path.clone());
+			}
 			let path_str = tab.file_path.to_string_lossy();
 			let config = self.config.lock().unwrap();
 			if save_state && tab.track {
@@ -381,12 +388,19 @@ impl DocumentManager {
 		self.recently_closed.pop()
 	}
 
-	pub fn push_recently_closed(&mut self, path: PathBuf) {
-		self.recently_closed.push(path);
-	}
-
 	pub const fn has_recently_closed(&self) -> bool {
 		!self.recently_closed.is_empty()
+	}
+
+	/// The reopen stack is part of document history: removing a document from
+	/// history also forgets it here. This keeps the invariant that every stack
+	/// entry has a resolvable format (its extension is known or its format is
+	/// remembered in the config), so reopening never has to prompt.
+	pub fn forget_recently_closed(&mut self, removed: &[String]) {
+		self.recently_closed.retain(|path| {
+			let path = path.to_string_lossy();
+			!removed.iter().any(|r| r.as_str() == path)
+		});
 	}
 
 	pub const fn notebook(&self) -> &Notebook {

@@ -13,11 +13,7 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-use paperback_core::{
-	config::ConfigManager,
-	parser::{build_file_filter_string, parser_supports_extension},
-	types::BookmarkFilterType,
-};
+use paperback_core::{config::ConfigManager, parser::build_file_filter_string, types::BookmarkFilterType};
 use patois::t;
 use wxdragon::{prelude::*, timer::Timer};
 
@@ -247,7 +243,7 @@ impl MainWindow {
 		}
 		let result = self.doc_manager.lock().unwrap().open_file(&self.doc_manager, path);
 		if result {
-			self.update_title();
+			update_title_from_manager(&self.frame, &self.doc_manager.lock().unwrap());
 			self.update_recent_documents_menu();
 			self.doc_manager.lock().unwrap().restore_focus();
 		}
@@ -400,34 +396,13 @@ impl MainWindow {
 		}
 	}
 
-	fn update_title(&self) {
-		let Ok(dm) = self.doc_manager.try_lock() else {
-			return;
-		};
-		if dm.tab_count() == 0 {
-			// TRANSLATORS: Main window title when no document is open
-			self.frame.set_title(&t("Paperback"));
-			// TRANSLATORS: Default status bar text when no document is open
-			self.frame.set_status_text(&t("Ready"), 0);
-			return;
-		}
-		if let Some(tab) = dm.active_tab() {
-			// TRANSLATORS: Window title when a document is open; {} is the document title
-			let template = t("Paperback - {}");
-			self.frame.set_title(&template.replace("{}", &display_title(tab)));
-			// TRANSLATORS: Status bar character count; {} is the number of characters
-			let chars_label = t("{} chars");
-			self.frame.set_status_text(&chars_label.replace("{}", &tab.session.content().len().to_string()), 0);
-		}
-	}
-
 	/// Get the frame
 	pub const fn frame(&self) -> &Frame {
 		&self.frame
 	}
 
 	fn ensure_parser_ready(&self, path: &Path) -> bool {
-		ensure_parser_ready_for_path(&self.frame, path, &self.config)
+		dialogs::ensure_parser_ready_for_path(&self.frame, path, &self.config)
 	}
 
 	fn update_recent_documents_menu(&self) {
@@ -473,7 +448,7 @@ impl MainWindow {
 			tracing::info!(count = paths.len(), "restoring previously open documents");
 			for path in paths {
 				let path = Path::new(&path);
-				if !ensure_parser_ready_for_path(&frame, path, &config) {
+				if !dialogs::ensure_parser_ready_for_path(&frame, path, &config) {
 					continue;
 				}
 				let _ = doc_manager.lock().unwrap().open_file_restore(&doc_manager, path);
@@ -509,7 +484,7 @@ impl MainWindow {
 			&& let Some(path) = dialog.get_path()
 		{
 			let path = Path::new(&path);
-			if !ensure_parser_ready_for_path(frame, path, config) {
+			if !dialogs::ensure_parser_ready_for_path(frame, path, config) {
 				return;
 			}
 			if doc_manager.lock().unwrap().open_file(doc_manager, path) {
@@ -549,6 +524,14 @@ impl MainWindow {
 		let dm_for_timer = Rc::clone(doc_manager);
 		let config_for_timer = Rc::clone(&config);
 		sleep_timer.on_tick(move |_| {
+			// Timer tick closures are bound to the frame without a timer id, so every closure
+			// runs for every frame-owned timer's tick, not just its own. Act only when a
+			// sleep timer was set AND it actually fired: a pending one-shot wx timer reports
+			// is_running() until it fires, so a still-running sleep timer means this dispatch
+			// came from some other timer's tick.
+			if !sleep_timer_running_for_tick.get() || sleep_timer_for_tick.is_running() {
+				return;
+			}
 			tracing::info!("sleep timer fired, closing application");
 			sleep_timer_running_for_tick.set(false);
 			sleep_timer_for_tick.stop();
@@ -625,11 +608,15 @@ impl MainWindow {
 				menu_ids::REOPEN_LAST_CLOSED => {
 					let path = dm.lock().unwrap().pop_recently_closed();
 					if let Some(path) = path {
-						if !ensure_parser_ready_for_path(&frame_copy, &path, &config) {
-							dm.lock().unwrap().push_recently_closed(path);
-							return;
-						}
-						if dm.lock().unwrap().open_file(&dm, &path) {
+						// A reopen entry's format is always resolvable without prompting:
+						// the document was opened this run, and the only way to lose a
+						// remembered format — removing the document from history — also
+						// removes it from the reopen stack. A failure therefore means the
+						// file itself is unopenable, and the entry is dropped rather than
+						// retried.
+						if dialogs::ensure_parser_ready_for_path(&frame_copy, &path, &config)
+							&& dm.lock().unwrap().open_file(&dm, &path)
+						{
 							let dm_ref = dm.lock().unwrap();
 							update_title_from_manager(&frame_copy, &dm_ref);
 							dm_ref.restore_focus();
@@ -1683,7 +1670,7 @@ impl MainWindow {
 							&& let Some(path) = recent_docs.get(doc_index)
 						{
 							let path = Path::new(path);
-							if !ensure_parser_ready_for_path(&frame_copy, path, &config) {
+							if !dialogs::ensure_parser_ready_for_path(&frame_copy, path, &config) {
 								return;
 							}
 							if dm.lock().unwrap().open_file(&dm, path) {
@@ -1720,6 +1707,10 @@ impl MainWindow {
 									dm_ref.close_document(index, false);
 								}
 							}
+							// Runs after the close loop: close_document pushes the closed
+							// tab onto the reopen stack, and a removed document must not
+							// stay reopenable.
+							dm_ref.forget_recently_closed(&result.paths_removed);
 							if !result.paths_to_close.is_empty() {
 								update_title_from_manager(&frame_copy, &dm_ref);
 								dm_ref.restore_focus();
@@ -1728,7 +1719,7 @@ impl MainWindow {
 						if let Some(path) = result.open {
 							let path_buf = Path::new(&path).to_path_buf();
 							let path = path_buf.as_path();
-							if !ensure_parser_ready_for_path(&frame_copy, path, &config) {
+							if !dialogs::ensure_parser_ready_for_path(&frame_copy, path, &config) {
 								return;
 							}
 							if dm.lock().unwrap().open_file(&dm, path) {
@@ -1769,60 +1760,6 @@ impl MainWindow {
 	}
 }
 
-fn ensure_parser_ready_for_path(frame: &Frame, path: &Path, config: &Rc<Mutex<ConfigManager>>) -> bool {
-	let extension = parser_extension_for_path(path);
-	if extension.is_empty() || parser_supports_extension(&extension) {
-		return true;
-	}
-	let cfg = config.lock().unwrap();
-	ensure_parser_for_unknown_file(frame, path, &cfg)
-}
-
-fn parser_extension_for_path(path: &Path) -> String {
-	let from_path = path.extension().and_then(|ext| ext.to_str()).map(clean_extension_token).unwrap_or_default();
-	if !from_path.is_empty() {
-		return from_path;
-	}
-	// Fallback for odd IPC/CLI strings that may contain trailing quotes or whitespace.
-	let raw = path.to_string_lossy();
-	let cleaned = raw.trim().trim_matches(['"', '\'', '\0']);
-	let candidate = cleaned
-		.rsplit_once(['/', '\\'])
-		.map_or(cleaned, |(_, file_name)| file_name)
-		.rsplit_once('.')
-		.map_or("", |(_, ext)| ext)
-		.trim();
-	clean_extension_token(candidate)
-}
-
-fn clean_extension_token(raw: &str) -> String {
-	let trimmed = raw.trim().trim_matches(['"', '\'', '\0']);
-	trimmed.chars().take_while(char::is_ascii_alphanumeric).collect()
-}
-
-fn ensure_parser_for_unknown_file(parent: &Frame, path: &Path, config: &ConfigManager) -> bool {
-	let path_str = path.to_string_lossy();
-	let saved_format = config.get_document_format(&path_str);
-	if !saved_format.is_empty() && parser_supports_extension(&saved_format) {
-		return true;
-	}
-	let Some(format) = dialogs::show_open_as_dialog(parent, path) else {
-		return false;
-	};
-	if !parser_supports_extension(&format) {
-		// TRANSLATORS: Error shown when the user picks a file format from the "Open As" dialog that this parser build doesn't support
-		let message = t("Unsupported format selected.");
-		let title = t("Error");
-		let dialog = MessageDialog::builder(parent, &message, &title)
-			.with_style(MessageDialogStyle::OK | MessageDialogStyle::IconError | MessageDialogStyle::Centre)
-			.build();
-		dialog.show_modal();
-		return false;
-	}
-	config.set_document_format(&path_str, &format);
-	true
-}
-
 /// Close the active document, announcing the newly focused document for screen readers.
 ///
 /// The `set_selection` inside `close_document` fires `on_page_changing` while the
@@ -1840,66 +1777,31 @@ fn close_active_document_announced(dm: &mut DocumentManager, live_region_label: 
 	dm.close_document(index, true);
 }
 
+/// Refreshes the window title and status bar to match the active document. This is the single
+/// place either is derived from manager state, so every open, close, and tab switch agrees on
+/// what they say.
 fn update_title_from_manager(frame: &Frame, dm: &DocumentManager) {
-	let sleep_start = SLEEP_TIMER_START_MS.load(Ordering::SeqCst);
-	let sleep_duration = SLEEP_TIMER_DURATION_MINUTES.load(Ordering::SeqCst);
-	if dm.tab_count() == 0 {
-		frame.set_title(&t("Paperback"));
-		let mut status_text = t("Ready");
-		if sleep_start > 0 {
-			let remaining = status::calculate_sleep_timer_remaining(sleep_start, sleep_duration);
-			if remaining > 0 {
-				status_text = status::format_sleep_timer_status(&status_text, remaining);
-			}
-		}
-		frame.set_status_text(&status_text, 0);
-		return;
-	}
 	if let Some(tab) = dm.active_tab() {
 		// TRANSLATORS: Window title when a document is open; {} is the document title
-		let template = t("Paperback - {}");
-		frame.set_title(&template.replace("{}", &display_title(tab)));
-		let position = tab.text_ctrl.get_insertion_point();
-		let status_info = tab.session.get_status_info(position);
-		let mut status_text = status::format_status_text(&status_info);
-		if sleep_start > 0 {
-			let remaining = status::calculate_sleep_timer_remaining(sleep_start, sleep_duration);
-			if remaining > 0 {
-				status_text = status::format_sleep_timer_status(&status_text, remaining);
-			}
+		frame.set_title(&t("Paperback - {}").replace("{}", &display_title(tab)));
+	} else {
+		// TRANSLATORS: Main window title when no document is open
+		frame.set_title(&t("Paperback"));
+	}
+	let mut status_text = dm.active_tab().map_or_else(
+		// TRANSLATORS: Default status bar text when no document is open
+		|| t("Ready"),
+		|tab| status::format_status_text(&tab.session.get_status_info(tab.text_ctrl.get_insertion_point())),
+	);
+	let sleep_start = SLEEP_TIMER_START_MS.load(Ordering::SeqCst);
+	if sleep_start > 0 {
+		let sleep_duration = SLEEP_TIMER_DURATION_MINUTES.load(Ordering::SeqCst);
+		let remaining = status::calculate_sleep_timer_remaining(sleep_start, sleep_duration);
+		if remaining > 0 {
+			status_text = status::format_sleep_timer_status(&status_text, remaining);
 		}
-		frame.set_status_text(&status_text, 0);
 	}
-}
-
-#[cfg(test)]
-mod tests {
-	use std::path::Path;
-
-	use super::parser_extension_for_path;
-
-	#[test]
-	fn parser_extension_for_path_handles_normal_paths() {
-		assert_eq!(parser_extension_for_path(Path::new("book.epub")), "epub");
-		assert_eq!(parser_extension_for_path(Path::new("C:\\docs\\book.PDF")), "PDF");
-	}
-
-	#[test]
-	fn parser_extension_for_path_strips_quotes_and_whitespace() {
-		assert_eq!(parser_extension_for_path(Path::new("  \"book.epub\"  ")), "epub");
-		assert_eq!(parser_extension_for_path(Path::new("'book.txt'")), "txt");
-	}
-
-	#[test]
-	fn parser_extension_for_path_returns_empty_for_no_extension() {
-		assert_eq!(parser_extension_for_path(Path::new("README")), "");
-	}
-
-	#[test]
-	fn parser_extension_for_path_handles_ipc_artifacts() {
-		assert_eq!(parser_extension_for_path(Path::new("book.epub\u{0}")), "epub");
-		assert_eq!(parser_extension_for_path(Path::new(" \"book.epub\u{0}\" ")), "epub");
-	}
+	frame.set_status_text(&status_text, 0);
 }
 
 #[cfg(target_os = "windows")]

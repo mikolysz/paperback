@@ -1,11 +1,67 @@
-use std::path::Path;
+use std::{path::Path, rc::Rc, sync::Mutex};
 
+use paperback_core::{config::ConfigManager, parser::parser_supports_extension};
 use patois::t;
 use wxdragon::prelude::*;
 
 use super::DIALOG_PADDING;
 
-pub fn show_open_as_dialog(parent: &Frame, path: &Path) -> Option<String> {
+/// Ensures some parser can handle `path`, asking the user how to open it when its extension is
+/// unrecognized and remembering that choice for future opens. Returns `false` when the user
+/// cancels the prompt or picks a format this build cannot parse.
+pub fn ensure_parser_ready_for_path(parent: &Frame, path: &Path, config: &Rc<Mutex<ConfigManager>>) -> bool {
+	let extension = parser_extension_for_path(path);
+	if extension.is_empty() || parser_supports_extension(&extension) {
+		return true;
+	}
+	// Hold the config lock only for these short reads and writes. Keeping a guard alive across the
+	// dialogs below risks deadlock: their nested event loops dispatch other handlers, which may
+	// need the same non-reentrant lock.
+	let path_str = path.to_string_lossy();
+	let saved_format = config.lock().unwrap().get_document_format(&path_str);
+	if !saved_format.is_empty() && parser_supports_extension(&saved_format) {
+		return true;
+	}
+	let Some(format) = show_open_as_dialog(parent, path) else {
+		return false;
+	};
+	if !parser_supports_extension(&format) {
+		// TRANSLATORS: Error shown when the user picks a file format from the "Open As" dialog that this parser build doesn't support
+		let message = t("Unsupported format selected.");
+		let title = t("Error");
+		let dialog = MessageDialog::builder(parent, &message, &title)
+			.with_style(MessageDialogStyle::OK | MessageDialogStyle::IconError | MessageDialogStyle::Centre)
+			.build();
+		dialog.show_modal();
+		return false;
+	}
+	config.lock().unwrap().set_document_format(&path_str, &format);
+	true
+}
+
+fn parser_extension_for_path(path: &Path) -> String {
+	let from_path = path.extension().and_then(|ext| ext.to_str()).map(clean_extension_token).unwrap_or_default();
+	if !from_path.is_empty() {
+		return from_path;
+	}
+	// Fallback for odd IPC/CLI strings that may contain trailing quotes or whitespace.
+	let raw = path.to_string_lossy();
+	let cleaned = raw.trim().trim_matches(['"', '\'', '\0']);
+	let candidate = cleaned
+		.rsplit_once(['/', '\\'])
+		.map_or(cleaned, |(_, file_name)| file_name)
+		.rsplit_once('.')
+		.map_or("", |(_, ext)| ext)
+		.trim();
+	clean_extension_token(candidate)
+}
+
+fn clean_extension_token(raw: &str) -> String {
+	let trimmed = raw.trim().trim_matches(['"', '\'', '\0']);
+	trimmed.chars().take_while(char::is_ascii_alphanumeric).collect()
+}
+
+fn show_open_as_dialog(parent: &Frame, path: &Path) -> Option<String> {
 	// TRANSLATORS: Title of the Open As dialog
 	let title = t("Open As");
 	let dialog = Dialog::builder(parent, &title).build();
@@ -64,4 +120,34 @@ pub fn show_open_as_dialog(parent: &Frame, path: &Path) -> Option<String> {
 		_ => "txt",
 	};
 	Some(format.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+	use std::path::Path;
+
+	use super::parser_extension_for_path;
+
+	#[test]
+	fn parser_extension_for_path_handles_normal_paths() {
+		assert_eq!(parser_extension_for_path(Path::new("book.epub")), "epub");
+		assert_eq!(parser_extension_for_path(Path::new("C:\\docs\\book.PDF")), "PDF");
+	}
+
+	#[test]
+	fn parser_extension_for_path_strips_quotes_and_whitespace() {
+		assert_eq!(parser_extension_for_path(Path::new("  \"book.epub\"  ")), "epub");
+		assert_eq!(parser_extension_for_path(Path::new("'book.txt'")), "txt");
+	}
+
+	#[test]
+	fn parser_extension_for_path_returns_empty_for_no_extension() {
+		assert_eq!(parser_extension_for_path(Path::new("README")), "");
+	}
+
+	#[test]
+	fn parser_extension_for_path_handles_ipc_artifacts() {
+		assert_eq!(parser_extension_for_path(Path::new("book.epub\u{0}")), "epub");
+		assert_eq!(parser_extension_for_path(Path::new(" \"book.epub\u{0}\" ")), "epub");
+	}
 }
