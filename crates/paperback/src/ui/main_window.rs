@@ -8,7 +8,7 @@ use std::{
 		Mutex,
 		atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering},
 	},
-	time::{SystemTime, UNIX_EPOCH},
+	time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use paperback_core::{
@@ -26,13 +26,13 @@ use super::{
 	dialogs,
 	document_manager::{
 		DocumentManager, ReparseInput, build_document_load_error_message, build_font_from_readability, display_title,
-		normalized_path_key, prompt_for_password, show_error_dialog,
+		normalized_path_key, prompt_for_password, show_error_dialog, title_or_filename,
 	},
 	find::{self, FindDialogState},
 	help::{self, MAIN_WINDOW_PTR},
 	menu, menu_ids,
 	navigation::{self, MarkerNavTarget},
-	parse_registry::PendingParse,
+	parse_registry::{PendingParse, ReparseJobOutcome},
 	status,
 };
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -84,7 +84,7 @@ pub struct MainWindow {
 	config: Rc<Mutex<ConfigManager>>,
 	#[cfg(target_os = "windows")]
 	_tray_state: Rc<Mutex<Option<tray::TrayState>>>,
-	_live_region_label: StaticText,
+	live_region_label: StaticText,
 	_find_dialog: Rc<Mutex<Option<FindDialogState>>>,
 	/// Parse completions deferred to avoid re-locking a mutex held below a modal dialog's nested
 	/// event loop. A frame-owned timer retries them after the modal closes; see `run_or_defer`.
@@ -245,17 +245,26 @@ impl MainWindow {
 		}
 		Self::schedule_restore_documents(frame, Rc::clone(&doc_manager), Rc::clone(&config));
 		let deferred_completions: Rc<RefCell<Vec<Box<dyn FnOnce()>>>> = Rc::new(RefCell::new(Vec::new()));
-		// Timer ticks continue inside modal event loops, but the lock probe keeps completions
-		// deferred until the first tick after the modal closes.
+		// This timer paces long-running reminders and retries deferred completions. Inside a modal
+		// event loop, the lock probe keeps completions queued until the outer handler returns.
 		let drain_timer = Rc::new(Timer::new(&frame));
 		let deferred = Rc::clone(&deferred_completions);
 		drain_timer.on_tick(move |_| {
-			if deferred.borrow().is_empty() || SHUTTING_DOWN.load(Ordering::SeqCst) {
+			if SHUTTING_DOWN.load(Ordering::SeqCst) {
 				return;
 			}
 			let Some(window) = super::app::main_window_from_ptr() else {
 				return;
 			};
+			if let Ok(mut dm) = window.doc_manager.try_lock()
+				&& let Some(reminder) = dm.parses_mut().due_reminder(Instant::now())
+			{
+				drop(dm);
+				live_region::announce(window.live_region_label, &reminder);
+			}
+			if deferred.borrow().is_empty() {
+				return;
+			}
 			if window.doc_manager.try_lock().is_err() || window.config.try_lock().is_err() {
 				return;
 			}
@@ -276,7 +285,7 @@ impl MainWindow {
 			config,
 			#[cfg(target_os = "windows")]
 			_tray_state: tray_state,
-			_live_region_label: live_region_label,
+			live_region_label,
 			_find_dialog: find_dialog,
 			deferred_completions,
 			#[cfg(target_os = "windows")]
@@ -331,6 +340,9 @@ impl MainWindow {
 		}
 		let key = normalized_path_key(path);
 		let is_restore = request.is_restore;
+		// The name announced below; synthetic documents (e.g. View Source) go by their tab title,
+		// not their temp file. Captured before the request's title moves into the registry.
+		let display_name = title_or_filename(request.title_override.clone().unwrap_or_default(), path);
 		let seq = {
 			let mut dm = self.doc_manager.lock().unwrap();
 			if let Some(index) = dm.find_tab_by_key(&key) {
@@ -406,7 +418,7 @@ impl MainWindow {
 			)
 		};
 		tracing::info!(path = %path.display(), "opening document");
-		let loading = {
+		let status = {
 			let mut dm = self.doc_manager.lock().unwrap();
 			// The import prompt's event loop may also have run a Close All that cancelled this open.
 			let Some(entry) = dm.parses_mut().by_seq_mut(seq) else {
@@ -417,8 +429,14 @@ impl MainWindow {
 			entry.render_tables_inline = render_tables_inline;
 			dm.parses().busy_status_text()
 		};
-		if let Some(loading) = loading {
-			self.frame.set_status_text(&loading, 0);
+		// Announce direct opens by name. Startup restore stays quiet, while the status bar always
+		// shows the overall busy state.
+		if !is_restore {
+			// TRANSLATORS: Screen-reader announcement when a document starts loading; {} is the document title or file name
+			live_region::announce(self.live_region_label, &t("Loading {}…").replace("{}", &display_name));
+		}
+		if let Some(status) = status {
+			self.frame.set_status_text(&status, 0);
 		}
 		spawn_parse(seq, path.to_string_lossy().to_string(), password, forced_extension, render_tables_inline);
 		true
@@ -440,7 +458,7 @@ impl MainWindow {
 	pub(super) fn finish_parse(&self, seq: u64, result: Result<DocumentSession, String>) {
 		match result {
 			Ok(session) => {
-				let (is_restore, restore_done) = {
+				let (is_restore, restore_finished, loaded_title) = {
 					let mut dm = self.doc_manager.lock().unwrap();
 					// A missing entry means the open was cancelled; discard the result.
 					let Some(entry) = dm.parses_mut().by_seq_mut(seq) else {
@@ -459,7 +477,7 @@ impl MainWindow {
 						);
 						return;
 					}
-					let Some((entry, restore_done)) = dm.parses_mut().take(seq) else {
+					let Some((entry, restore_finished)) = dm.parses_mut().take(seq, false) else {
 						return;
 					};
 					let select = !entry.is_restore
@@ -471,17 +489,43 @@ impl MainWindow {
 						tab.text_ctrl.set_insertion_point(caret);
 						tab.text_ctrl.show_position(caret);
 					}
-					if restore_done {
+					if restore_finished.is_some() {
 						dm.finish_restore_group();
 						dm.restore_focus();
 					} else if select {
 						dm.restore_focus();
 					}
 					update_title_from_manager(&self.frame, &dm);
-					(entry.is_restore, restore_done)
+					// Announce a restored tab only if the user requested it again while it was pending.
+					let loaded_title =
+						(!entry.is_restore || entry.focus_when_done).then(|| display_title(dm.get_tab(index).unwrap()));
+					(entry.is_restore, restore_finished, loaded_title)
 				};
-				// Rebuild recent documents once per user open or restore group, not once per restored tab.
-				if !is_restore || restore_done {
+				let loaded_message = loaded_title.map(|title| {
+					// TRANSLATORS: Screen-reader announcement when a document finishes loading; {} is the document title
+					t("Document loaded: {}.").replace("{}", &title)
+				});
+				let group_message = restore_finished.map(|failed| {
+					if failed == 0 {
+						// TRANSLATORS: Screen-reader announcement when the startup restore group finishes and every document loaded
+						t("All documents loaded.")
+					} else {
+						// TRANSLATORS: Screen-reader announcement when the startup restore group finishes but at least one document failed to load
+						t("Document loading complete.")
+					}
+				});
+				// A document completion that also finishes its restore group makes one combined
+				// announce call: on macOS, a High-priority announcement interrupts and flushes the
+				// one before it, so back-to-back calls would swallow the document title.
+				let announcement = match (loaded_message, group_message) {
+					(Some(loaded), Some(group)) => Some(format!("{loaded} {group}")),
+					(loaded, group) => loaded.or(group),
+				};
+				if let Some(message) = announcement {
+					live_region::announce(self.live_region_label, &message);
+				}
+				// Rebuild recent documents once per user open or restore group, not per restored tab.
+				if !is_restore || restore_finished.is_some() {
 					self.update_recent_documents_menu();
 				} else {
 					menu::update_menu_item_states(&self.frame, true);
@@ -524,7 +568,7 @@ impl MainWindow {
 						return;
 					}
 				}
-				let Some((_, restore_done)) = self.doc_manager.lock().unwrap().parses_mut().take(seq) else {
+				let Some((_, restore_finished)) = self.doc_manager.lock().unwrap().parses_mut().take(seq, true) else {
 					return;
 				};
 				let message = if prompt_password {
@@ -539,11 +583,22 @@ impl MainWindow {
 					return;
 				}
 				let mut dm = self.doc_manager.lock().unwrap();
-				if restore_done {
+				if restore_finished.is_some() {
 					dm.finish_restore_group();
 					dm.restore_focus();
 				}
 				update_title_from_manager(&self.frame, &dm);
+				drop(dm);
+				if let Some(failed) = restore_finished {
+					let message = if failed == 0 {
+						// TRANSLATORS: Screen-reader announcement when the startup restore group finishes and every document loaded
+						t("All documents loaded.")
+					} else {
+						// TRANSLATORS: Screen-reader announcement when the startup restore group finishes but at least one document failed to load
+						t("Document loading complete.")
+					};
+					live_region::announce(self.live_region_label, &message);
+				}
 			}
 		}
 	}
@@ -555,13 +610,18 @@ impl MainWindow {
 			let mut dm = self.doc_manager.lock().unwrap();
 			let inputs = dm.collect_reparse_inputs();
 			let generation = dm.parses_mut().begin_reparse_batch(inputs.len());
+			if inputs.is_empty() {
+				// An empty batch supersedes an in-flight one without ever reporting BatchFinished,
+				// so any stale "Reloading documents…" status must be cleared here.
+				update_title_from_manager(&self.frame, &dm);
+				return;
+			}
 			(inputs, generation)
 		};
-		if inputs.is_empty() {
-			return;
-		}
-		// TRANSLATORS: Status bar text while open documents are being re-parsed after a settings change
-		self.frame.set_status_text(&t("Reloading documents…"), 0);
+		// TRANSLATORS: Screen-reader announcement and status bar text while open documents are being re-parsed after a settings change
+		let message = t("Reloading documents…");
+		live_region::announce(self.live_region_label, &message);
+		self.frame.set_status_text(&message, 0);
 		for input in inputs {
 			std::thread::spawn(move || {
 				let result =
@@ -574,17 +634,28 @@ impl MainWindow {
 	pub(super) fn finish_reparse(&self, generation: u64, input: ReparseInput, result: Result<DocumentSession, String>) {
 		let mut dm = self.doc_manager.lock().unwrap();
 		// Discard results from an older setting change.
-		let Some(batch_finished) = dm.parses_mut().reparse_job_done(generation) else {
+		let outcome = dm.parses_mut().reparse_job_done(generation, result.is_err());
+		if outcome == ReparseJobOutcome::Superseded {
 			return;
-		};
+		}
 		match result {
 			Ok(session) => dm.replace_tab_session(input.seq, session),
 			Err(err) => {
 				tracing::error!(path = %input.path, error = %err, "failed to re-parse document for render_tables_inline toggle");
 			}
 		}
-		if batch_finished {
+		if let ReparseJobOutcome::BatchFinished { failed } = outcome {
 			update_title_from_manager(&self.frame, &dm);
+			drop(dm);
+			// A failed re-parse keeps the old session, so do not announce a successful reload.
+			let message = if failed == 0 {
+				// TRANSLATORS: Screen-reader announcement when every open document has finished re-parsing
+				t("Documents reloaded.")
+			} else {
+				// TRANSLATORS: Screen-reader announcement when re-parsing finishes but at least one document failed to reload
+				t("Document reload complete.")
+			};
+			live_region::announce(self.live_region_label, &message);
 		}
 	}
 
@@ -2089,7 +2160,7 @@ fn update_title_from_manager(frame: &Frame, dm: &DocumentManager) {
 		// TRANSLATORS: Main window title when no document is open
 		frame.set_title(&t("Paperback"));
 	}
-	// Keep loading status visible until every pending parse finishes.
+	// Keep loading or reloading status visible until all background work finishes.
 	let mut status_text = dm.parses().busy_status_text().unwrap_or_else(|| {
 		dm.active_tab().map_or_else(
 			// TRANSLATORS: Default status bar text when no document is open

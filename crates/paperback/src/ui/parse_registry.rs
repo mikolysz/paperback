@@ -1,7 +1,10 @@
-//! Tracks background document opens, startup restoration, and `render_tables_inline` re-parses.
+//! Tracks background opens, startup restoration, re-parse batches, and their accessibility status.
 //! `DocumentManager` owns this state; it contains no widgets or locks.
 
-use std::path::PathBuf;
+use std::{
+	path::PathBuf,
+	time::{Duration, Instant},
+};
 
 use patois::t;
 
@@ -26,6 +29,19 @@ pub struct PendingParse {
 	pub render_tables_inline: bool,
 }
 
+/// State of a re-parse batch after recording one result.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReparseJobOutcome {
+	/// The result belongs to an older batch and must be discarded.
+	Superseded,
+	/// The current batch still has work in flight.
+	BatchInFlight,
+	/// The current batch has finished; `failed` tabs keep their old sessions.
+	BatchFinished { failed: usize },
+}
+
+const REMINDER_INTERVAL: Duration = Duration::from_secs(15);
+
 #[derive(Default)]
 pub struct ParseRegistry {
 	pending: Vec<PendingParse>,
@@ -34,8 +50,12 @@ pub struct ParseRegistry {
 	/// already-open tab) clears it so restore cannot override the user's selection.
 	restore_active_key: Option<String>,
 	/// Identifies the current re-parse batch so results from older batches can be discarded.
+	restore_failed: usize,
 	reparse_generation: u64,
 	reparse_jobs_left: usize,
+	reparse_failed: usize,
+	/// Start of the current reminder interval, or `None` while idle.
+	reminder_anchor: Option<Instant>,
 }
 
 impl ParseRegistry {
@@ -47,6 +67,10 @@ impl ParseRegistry {
 		entry.seq = seq;
 		if !entry.is_restore {
 			self.restore_active_key = None;
+		}
+		if self.pending.is_empty() && self.reparse_jobs_left == 0 {
+			// A busy period starting between two polls must not inherit the previous one's clock.
+			self.reminder_anchor = None;
 		}
 		self.pending.push(entry);
 		seq
@@ -61,13 +85,17 @@ impl ParseRegistry {
 		self.pending.iter_mut().find(|entry| entry.seq == seq)
 	}
 
-	/// Removes `seq` and reports whether it was the last startup-restore request. Returns `None`
-	/// for an entry that was cancelled before its parse completed.
-	pub fn take(&mut self, seq: u64) -> Option<(PendingParse, bool)> {
+	/// Removes `seq`. If it completes startup restore, returns the group's failure count. Returns
+	/// `None` for an entry that was cancelled before its parse completed.
+	pub fn take(&mut self, seq: u64, failed: bool) -> Option<(PendingParse, Option<usize>)> {
 		let index = self.pending.iter().position(|entry| entry.seq == seq)?;
 		let entry = self.pending.remove(index);
-		let restore_done = entry.is_restore && !self.pending.iter().any(|e| e.is_restore);
-		Some((entry, restore_done))
+		if entry.is_restore && failed {
+			self.restore_failed += 1;
+		}
+		let restore_finished = (entry.is_restore && !self.pending.iter().any(|e| e.is_restore))
+			.then(|| std::mem::take(&mut self.restore_failed));
+		Some((entry, restore_finished))
 	}
 
 	/// Cancels every pending open, including any startup restore; their in-flight parse results
@@ -75,6 +103,7 @@ impl ParseRegistry {
 	pub fn cancel_all(&mut self) {
 		self.pending.clear();
 		self.restore_active_key = None;
+		self.restore_failed = 0;
 	}
 
 	pub const fn has_pending(&self) -> bool {
@@ -95,26 +124,66 @@ impl ParseRegistry {
 
 	/// Starts a re-parse batch and supersedes any older batch still in flight.
 	pub const fn begin_reparse_batch(&mut self, jobs: usize) -> u64 {
+		if self.pending.is_empty() && self.reparse_jobs_left == 0 {
+			// A busy period starting between two polls must not inherit the previous one's clock.
+			self.reminder_anchor = None;
+		}
 		self.reparse_generation += 1;
 		self.reparse_jobs_left = jobs;
+		self.reparse_failed = 0;
 		self.reparse_generation
 	}
 
-	/// Records a re-parse completion. Returns `None` for a superseded batch; otherwise reports
-	/// whether the current batch has finished.
-	pub const fn reparse_job_done(&mut self, generation: u64) -> Option<bool> {
+	/// Records a re-parse result and reports whether its batch is stale, active, or complete.
+	pub const fn reparse_job_done(&mut self, generation: u64, failed: bool) -> ReparseJobOutcome {
 		if generation != self.reparse_generation {
-			return None;
+			return ReparseJobOutcome::Superseded;
 		}
 		self.reparse_jobs_left -= 1;
-		Some(self.reparse_jobs_left == 0)
+		if failed {
+			self.reparse_failed += 1;
+		}
+		if self.reparse_jobs_left == 0 {
+			ReparseJobOutcome::BatchFinished { failed: self.reparse_failed }
+		} else {
+			ReparseJobOutcome::BatchInFlight
+		}
 	}
 
+	/// Names one pending open, counts several, or describes an active re-parse batch.
 	pub fn busy_status_text(&self) -> Option<String> {
-		self.pending.last().map(|entry| {
-			let filename = title_or_filename(String::new(), &entry.path);
-			// TRANSLATORS: Status bar text while a document is being parsed; {} is the document title or file name
-			t("Loading {}…").replace("{}", &filename)
+		match self.pending.len() {
+			// TRANSLATORS: Screen-reader announcement and status bar text while open documents are being re-parsed after a settings change
+			0 => (self.reparse_jobs_left > 0).then(|| t("Reloading documents…")),
+			1 => {
+				let entry = &self.pending[0];
+				let name = title_or_filename(entry.title_override.clone().unwrap_or_default(), &entry.path);
+				// TRANSLATORS: Status bar text while a document is being parsed; {} is the document title or file name
+				Some(t("Loading {}…").replace("{}", &name))
+			}
+			// TRANSLATORS: Status bar text while several documents are being parsed; {} is how many
+			count => Some(t("Loading {} documents…").replace("{}", &count.to_string())),
+		}
+	}
+
+	/// Returns a live-region reminder every `REMINDER_INTERVAL` while work remains. The first busy
+	/// poll starts the clock; it resets when the registry goes idle or new work starts from idle.
+	pub fn due_reminder(&mut self, now: Instant) -> Option<String> {
+		if self.pending.is_empty() && self.reparse_jobs_left == 0 {
+			self.reminder_anchor = None;
+			return None;
+		}
+		let anchor = *self.reminder_anchor.get_or_insert(now);
+		if now.duration_since(anchor) < REMINDER_INTERVAL {
+			return None;
+		}
+		self.reminder_anchor = Some(now);
+		Some(if self.pending.is_empty() {
+			// TRANSLATORS: Periodic screen-reader reminder that a document re-parse is still running
+			t("Still reloading…")
+		} else {
+			// TRANSLATORS: Periodic screen-reader reminder that a document is still being loaded
+			t("Still loading…")
 		})
 	}
 }
@@ -164,16 +233,16 @@ mod tests {
 	}
 
 	#[test]
-	fn restore_group_finishes_when_its_last_entry_is_taken() {
+	fn restore_group_finishes_when_its_last_entry_is_taken_and_counts_failures() {
 		let mut registry = ParseRegistry::default();
 		let first = registry.register(entry("a.epub", true));
 		let second = registry.register(entry("b.epub", true));
 		let user = registry.register(entry("c.epub", false));
 
-		assert!(!registry.take(first).unwrap().1);
-		// A non-restore open completing doesn't finish the group.
-		assert!(!registry.take(user).unwrap().1);
-		assert!(registry.take(second).unwrap().1);
+		assert_eq!(registry.take(first, true).unwrap().1, None);
+		// A failed user open does not count against startup restore.
+		assert_eq!(registry.take(user, true).unwrap().1, None);
+		assert_eq!(registry.take(second, false).unwrap().1, Some(1));
 	}
 
 	#[test]
@@ -188,31 +257,93 @@ mod tests {
 		assert!(!registry.has_pending());
 		assert_eq!(registry.restore_active_key(), None);
 		assert!(registry.by_seq_mut(first).is_none());
-		assert!(registry.take(second).is_none());
+		assert!(registry.take(second, false).is_none());
 	}
 
 	#[test]
-	fn busy_status_text_shows_newest_pending_document() {
+	fn busy_status_text_reflects_what_is_in_flight() {
 		let mut registry = ParseRegistry::default();
 		assert_eq!(registry.busy_status_text(), None);
 
-		registry.register(entry("a.epub", false));
+		let first = registry.register(entry("a.epub", false));
 		assert_eq!(registry.busy_status_text(), Some("Loading a.epub…".to_string()));
 
 		let second = registry.register(entry("b.epub", false));
+		assert_eq!(registry.busy_status_text(), Some("Loading 2 documents…".to_string()));
+
+		registry.take(first, false).unwrap();
 		assert_eq!(registry.busy_status_text(), Some("Loading b.epub…".to_string()));
 
-		registry.take(second).unwrap();
-		assert_eq!(registry.busy_status_text(), Some("Loading a.epub…".to_string()));
+		// A synthetic document (e.g. View Source) is named by its tab title, not its temp file.
+		registry.take(second, false).unwrap();
+		registry.register(PendingParse {
+			title_override: Some("Source: book.epub".to_string()),
+			..entry("book.epub.source.txt", false)
+		});
+		assert_eq!(registry.busy_status_text(), Some("Loading Source: book.epub…".to_string()));
 	}
 
 	#[test]
-	fn reparse_batch_counts_jobs_until_finished() {
+	fn reparse_only_batch_shows_reloading_status() {
+		let mut registry = ParseRegistry::default();
+		registry.begin_reparse_batch(2);
+		assert_eq!(registry.busy_status_text(), Some("Reloading documents…".to_string()));
+	}
+
+	#[test]
+	fn reminders_fire_every_interval_while_busy_and_reset_when_idle() {
+		let mut registry = ParseRegistry::default();
+		let base = Instant::now();
+		assert_eq!(registry.due_reminder(base), None);
+
+		let seq = registry.register(entry("a.epub", false));
+		// The first busy poll starts the clock without announcing.
+		assert_eq!(registry.due_reminder(base), None);
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(14)), None);
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(15)), Some("Still loading…".to_string()));
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(16)), None);
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(30)), Some("Still loading…".to_string()));
+
+		// The next busy period starts a new interval after becoming idle.
+		registry.take(seq, false).unwrap();
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(60)), None);
+		registry.register(entry("b.epub", false));
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(61)), None);
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(75)), None);
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(76)), Some("Still loading…".to_string()));
+	}
+
+	#[test]
+	fn busy_period_starting_between_polls_gets_a_fresh_reminder_clock() {
+		let mut registry = ParseRegistry::default();
+		let base = Instant::now();
+		let seq = registry.register(entry("a.epub", false));
+		assert_eq!(registry.due_reminder(base), None);
+
+		// The registry goes idle and busy again without a poll observing the idle gap.
+		registry.take(seq, false).unwrap();
+		registry.register(entry("b.epub", false));
+
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(20)), None);
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(35)), Some("Still loading…".to_string()));
+	}
+
+	#[test]
+	fn reminder_wording_distinguishes_reparse_batches() {
+		let mut registry = ParseRegistry::default();
+		registry.begin_reparse_batch(1);
+		let base = Instant::now();
+		assert_eq!(registry.due_reminder(base), None);
+		assert_eq!(registry.due_reminder(base + Duration::from_secs(15)), Some("Still reloading…".to_string()));
+	}
+
+	#[test]
+	fn reparse_batch_counts_jobs_and_failures() {
 		let mut registry = ParseRegistry::default();
 		let generation = registry.begin_reparse_batch(2);
 
-		assert_eq!(registry.reparse_job_done(generation), Some(false));
-		assert_eq!(registry.reparse_job_done(generation), Some(true));
+		assert_eq!(registry.reparse_job_done(generation, false), ReparseJobOutcome::BatchInFlight);
+		assert_eq!(registry.reparse_job_done(generation, true), ReparseJobOutcome::BatchFinished { failed: 1 });
 	}
 
 	#[test]
@@ -221,7 +352,7 @@ mod tests {
 		let stale = registry.begin_reparse_batch(2);
 		let current = registry.begin_reparse_batch(1);
 
-		assert_eq!(registry.reparse_job_done(stale), None);
-		assert_eq!(registry.reparse_job_done(current), Some(true));
+		assert_eq!(registry.reparse_job_done(stale, false), ReparseJobOutcome::Superseded);
+		assert_eq!(registry.reparse_job_done(current, false), ReparseJobOutcome::BatchFinished { failed: 0 });
 	}
 }

@@ -743,12 +743,37 @@ msgstr ""
 msgid "Import document data"
 msgstr ""
 
+#. TRANSLATORS: Screen-reader announcement when a document starts loading; {} is the document title or file name
+#. TRANSLATORS: Status bar text while a document is being parsed; {} is the document title or file name
+msgid "Loading {}…"
+msgstr ""
+
+#. TRANSLATORS: Screen-reader announcement when a document finishes loading; {} is the document title
+msgid "Document loaded: {}."
+msgstr ""
+
+#. TRANSLATORS: Screen-reader announcement when the startup restore group finishes and every document loaded
+msgid "All documents loaded."
+msgstr ""
+
+#. TRANSLATORS: Screen-reader announcement when the startup restore group finishes but at least one document failed to load
+msgid "Document loading complete."
+msgstr ""
+
 #. TRANSLATORS: Error shown when the user dismisses the password prompt for an encrypted document without entering one
 msgid "Password is required."
 msgstr ""
 
-#. TRANSLATORS: Status bar text while open documents are being re-parsed after a settings change
+#. TRANSLATORS: Screen-reader announcement and status bar text while open documents are being re-parsed after a settings change
 msgid "Reloading documents…"
+msgstr ""
+
+#. TRANSLATORS: Screen-reader announcement when every open document has finished re-parsing
+msgid "Documents reloaded."
+msgstr ""
+
+#. TRANSLATORS: Screen-reader announcement when re-parsing finishes but at least one document failed to reload
+msgid "Document reload complete."
 msgstr ""
 
 #. TRANSLATORS: Message shown when the user tries to perform an action while a help/documentation Web View window is open
@@ -1777,8 +1802,16 @@ msgstr ""
 msgid "No note at the current position."
 msgstr ""
 
-#. TRANSLATORS: Status bar text while a document is being parsed; {} is the document title or file name
-msgid "Loading {}…"
+#. TRANSLATORS: Status bar text while several documents are being parsed; {} is how many
+msgid "Loading {} documents…"
+msgstr ""
+
+#. TRANSLATORS: Periodic screen-reader reminder that a document re-parse is still running
+msgid "Still reloading…"
+msgstr ""
+
+#. TRANSLATORS: Periodic screen-reader reminder that a document is still being loaded
+msgid "Still loading…"
 msgstr ""
 
 #. TRANSLATORS: Status bar label for the current line number, e.g. "Line 5, Character 120, Reading 45%"
