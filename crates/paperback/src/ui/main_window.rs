@@ -13,7 +13,12 @@ use std::{
 	time::{SystemTime, UNIX_EPOCH},
 };
 
-use paperback_core::{config::ConfigManager, parser::build_file_filter_string, types::BookmarkFilterType};
+use paperback_core::{
+	config::ConfigManager,
+	parser::{PASSWORD_REQUIRED_ERROR_PREFIX, build_file_filter_string},
+	session::DocumentSession,
+	types::BookmarkFilterType,
+};
 use patois::t;
 use wxdragon::{prelude::*, timer::Timer};
 
@@ -21,7 +26,10 @@ use wxdragon::{prelude::*, timer::Timer};
 use super::tray;
 use super::{
 	dialogs,
-	document_manager::{DocumentManager, build_font_from_readability, display_title},
+	document_manager::{
+		DocumentManager, build_document_load_error_message, build_font_from_readability, display_title,
+		prompt_for_password, show_error_dialog,
+	},
 	find::{self, FindDialogState},
 	help::{self, MAIN_WINDOW_PTR},
 	menu, menu_ids,
@@ -40,6 +48,27 @@ const KEY_NUMPAD_DELETE: i32 = 330;
 
 pub static SLEEP_TIMER_START_MS: AtomicI64 = AtomicI64::new(0);
 pub static SLEEP_TIMER_DURATION_MINUTES: AtomicI32 = AtomicI32::new(0);
+
+/// How a document open should present itself. The default is a tracked, user-initiated open with
+/// no title or caret override.
+pub struct OpenRequest {
+	/// Whether to remember the document in recent files, saved positions, and the restore list.
+	/// Help and source views are untracked.
+	pub track: bool,
+	/// Set for opens replaying a previous session, which must not prompt about sidecar files the
+	/// user already answered for.
+	pub is_restore: bool,
+	/// Tab title to use instead of the document's own, for synthetic documents like source views.
+	pub title_override: Option<String>,
+	/// Caret position to jump to once the tab exists.
+	pub initial_caret: Option<i64>,
+}
+
+impl Default for OpenRequest {
+	fn default() -> Self {
+		Self { track: true, is_restore: false, title_override: None, initial_caret: None }
+	}
+}
 
 #[derive(Default)]
 struct RestoreState {
@@ -238,16 +267,115 @@ impl MainWindow {
 	}
 
 	pub fn open_file(&self, path: &Path) -> bool {
-		if !self.ensure_parser_ready(path) {
+		self.request_open(path, OpenRequest::default())
+	}
+
+	/// Opens a document and brings the whole window in line with the result: the tab, the title,
+	/// the status bar, focus, and the menus that depend on a document being open. Every open goes
+	/// through here, so no caller has to remember that list. Returns `false` if the document could
+	/// not be opened.
+	pub(super) fn request_open(&self, path: &Path, request: OpenRequest) -> bool {
+		if !dialogs::ensure_parser_ready_for_path(&self.frame, path, &self.config) {
 			return false;
 		}
-		let result = self.doc_manager.lock().unwrap().open_file(&self.doc_manager, path);
-		if result {
-			update_title_from_manager(&self.frame, &self.doc_manager.lock().unwrap());
-			self.update_recent_documents_menu();
-			self.doc_manager.lock().unwrap().restore_focus();
+		let notebook = *self.doc_manager.lock().unwrap().notebook();
+		if !path.exists() {
+			// TRANSLATORS: Error message shown when the requested document file does not exist; {} is the file path
+			let message = t("File not found: {}").replace("{}", &path.to_string_lossy());
+			// TRANSLATORS: Generic error dialog title
+			show_error_dialog(&notebook, &message, &t("Error"));
+			return false;
 		}
-		result
+		{
+			let dm = self.doc_manager.lock().unwrap();
+			if let Some(index) = dm.find_tab_by_path(path) {
+				// Bring the existing tab forward rather than opening the same document twice.
+				dm.notebook().set_selection(index);
+				if let Some(caret) = request.initial_caret
+					&& let Some(tab) = dm.get_tab(index)
+				{
+					tab.text_ctrl.set_insertion_point(caret);
+					tab.text_ctrl.show_position(caret);
+				}
+				dm.restore_focus();
+				update_title_from_manager(&self.frame, &dm);
+				return true;
+			}
+		}
+		let import_path = path.with_extension("paperback");
+		if !request.is_restore && import_path.exists() {
+			// TRANSLATORS: Prompt asking whether to import a document's previously saved settings and bookmarks found alongside it
+			let message = t("A .paperback file was found for this document. Would you like to import it?");
+			// TRANSLATORS: Title of the dialog prompting to import a document's saved settings and bookmarks
+			let title = t("Import document data");
+			let dialog = MessageDialog::builder(&notebook, &message, &title)
+				.with_style(MessageDialogStyle::YesNo | MessageDialogStyle::IconQuestion | MessageDialogStyle::Centre)
+				.build();
+			if dialog.show_modal() == ID_YES {
+				let config = self.config.lock().unwrap();
+				config.import_settings_from_file(&path.to_string_lossy(), import_path.to_str().unwrap());
+			}
+		}
+		let path_str = path.to_string_lossy().to_string();
+		let (mut password, forced_extension, render_tables_inline) = {
+			let config = self.config.lock().unwrap();
+			config.refresh_document_hash(&path_str);
+			(
+				config.get_document_password(&path_str),
+				config.get_document_format(&path_str),
+				config.get_app_bool("render_tables_inline", true),
+			)
+		};
+		tracing::info!(path = %path.display(), "opening document");
+		let mut result = DocumentSession::new(&path_str, &password, &forced_extension, render_tables_inline);
+		// A stored password that no longer opens the document is indistinguishable from having
+		// none, so clear it and ask once before giving up.
+		if matches!(&result, Err(err) if err.starts_with(PASSWORD_REQUIRED_ERROR_PREFIX)) {
+			self.config.lock().unwrap().set_document_password(&path_str, "");
+			let Some(entered) = prompt_for_password(&notebook, path) else {
+				// TRANSLATORS: Error shown when the user dismisses the password prompt for an encrypted document without entering one
+				show_error_dialog(&notebook, &t("Password is required."), &t("Error"));
+				return false;
+			};
+			password = entered;
+			result = DocumentSession::new(&path_str, &password, &forced_extension, render_tables_inline);
+		}
+		let session = match result {
+			Ok(session) => session,
+			Err(err) => {
+				tracing::error!(path = %path.display(), error = %err, "failed to open document");
+				show_error_dialog(&notebook, &build_document_load_error_message(path, &err), &t("Error"));
+				return false;
+			}
+		};
+		{
+			let mut dm = self.doc_manager.lock().unwrap();
+			dm.add_session_tab(
+				&self.doc_manager,
+				path,
+				session,
+				&password,
+				request.track,
+				request.title_override.as_deref(),
+			);
+			if let Some(caret) = request.initial_caret
+				&& let Some(tab) = dm.active_tab()
+			{
+				tab.text_ctrl.set_insertion_point(caret);
+				tab.text_ctrl.show_position(caret);
+			}
+			if !request.is_restore {
+				dm.restore_focus();
+			}
+			update_title_from_manager(&self.frame, &dm);
+		}
+		// Startup restore rebuilds the menu bar once for the whole group rather than per document.
+		if request.is_restore {
+			menu::update_menu_item_states(&self.frame, true);
+		} else {
+			self.update_recent_documents_menu();
+		}
+		true
 	}
 
 	#[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -401,10 +529,6 @@ impl MainWindow {
 		&self.frame
 	}
 
-	fn ensure_parser_ready(&self, path: &Path) -> bool {
-		dialogs::ensure_parser_ready_for_path(&self.frame, path, &self.config)
-	}
-
 	fn update_recent_documents_menu(&self) {
 		let menu_bar = menu::create_menu_bar(&self.config.lock().unwrap());
 		self.frame.set_menu_bar(menu_bar);
@@ -446,12 +570,9 @@ impl MainWindow {
 			let active_path = config.lock().unwrap().get_app_string("active_document", "");
 			let paths = config.lock().unwrap().get_opened_documents_existing();
 			tracing::info!(count = paths.len(), "restoring previously open documents");
+			let window = super::app::main_window_from_ptr().expect("idle events only fire after the app is built");
 			for path in paths {
-				let path = Path::new(&path);
-				if !dialogs::ensure_parser_ready_for_path(&frame, path, &config) {
-					continue;
-				}
-				let _ = doc_manager.lock().unwrap().open_file_restore(&doc_manager, path);
+				window.request_open(Path::new(&path), OpenRequest { is_restore: true, ..OpenRequest::default() });
 			}
 			let mut target_idx = pre_restore_active;
 			if target_idx.is_none() && !active_path.is_empty() {
@@ -471,7 +592,7 @@ impl MainWindow {
 		});
 	}
 
-	fn handle_open(frame: &Frame, doc_manager: &Rc<Mutex<DocumentManager>>, config: &Rc<Mutex<ConfigManager>>) {
+	fn handle_open(frame: &Frame) {
 		let wildcard = build_file_filter_string();
 		// TRANSLATORS: Title of the file picker dialog shown when opening a document
 		let dialog_title = t("Open Document");
@@ -483,19 +604,8 @@ impl MainWindow {
 		if dialog.show_modal() == ID_OK
 			&& let Some(path) = dialog.get_path()
 		{
-			let path = Path::new(&path);
-			if !dialogs::ensure_parser_ready_for_path(frame, path, config) {
-				return;
-			}
-			if doc_manager.lock().unwrap().open_file(doc_manager, path) {
-				let Ok(dm_ref) = doc_manager.try_lock() else {
-					return;
-				};
-				update_title_from_manager(frame, &dm_ref);
-				dm_ref.restore_focus();
-				drop(dm_ref);
-				menu::update_menu_item_states(frame, true);
-			}
+			let window = super::app::main_window_from_ptr().expect("menu events only fire after the app is built");
+			window.request_open(Path::new(&path), OpenRequest::default());
 		}
 	}
 
@@ -580,7 +690,7 @@ impl MainWindow {
 			let id = event.get_id();
 			match id {
 				menu_ids::OPEN => {
-					Self::handle_open(&frame_copy, &dm, &config);
+					Self::handle_open(&frame_copy);
 				}
 				menu_ids::CLOSE => {
 					let mut dm = dm.lock().unwrap();
@@ -608,23 +718,15 @@ impl MainWindow {
 				menu_ids::REOPEN_LAST_CLOSED => {
 					let path = dm.lock().unwrap().pop_recently_closed();
 					if let Some(path) = path {
-						// A reopen entry's format is always resolvable without prompting:
-						// the document was opened this run, and the only way to lose a
-						// remembered format — removing the document from history — also
-						// removes it from the reopen stack. A failure therefore means the
+						let window =
+							super::app::main_window_from_ptr().expect("menu events only fire after the app is built");
+						// A reopen entry never needs the "Open As" prompt: the stack holds
+						// only tracked documents opened this run, and the only way to lose
+						// a remembered format — removing the document from history — also
+						// removes it from the stack. A false return therefore means the
 						// file itself is unopenable, and the entry is dropped rather than
 						// retried.
-						if dialogs::ensure_parser_ready_for_path(&frame_copy, &path, &config)
-							&& dm.lock().unwrap().open_file(&dm, &path)
-						{
-							let dm_ref = dm.lock().unwrap();
-							update_title_from_manager(&frame_copy, &dm_ref);
-							dm_ref.restore_focus();
-							drop(dm_ref);
-							let menu_bar = menu::create_menu_bar(&config.lock().unwrap());
-							frame_copy.set_menu_bar(menu_bar);
-							menu::update_menu_item_states(&frame_copy, true);
-						}
+						window.request_open(&path, OpenRequest::default());
 						let has_reopen = dm.lock().unwrap().has_recently_closed();
 						menu::update_reopen_state(&frame_copy, has_reopen);
 					}
@@ -1435,14 +1537,17 @@ impl MainWindow {
 						Some(Some((view, orig_name))) => {
 							// TRANSLATORS: Prefix before the file name in the tab title for a "View Source" tab, e.g. "Source: book.epub"
 							let title = format!("{} {orig_name}", t("Source:"));
-							let opened = dm.lock().unwrap().open_source_file(&dm, Path::new(&view.path), &title);
-							if opened {
-								let dm_ref = dm.lock().unwrap();
-								if let Some(tab) = dm_ref.active_tab() {
-									tab.text_ctrl.set_insertion_point(view.caret);
-									tab.text_ctrl.show_position(view.caret);
-								}
-							}
+							let window = super::app::main_window_from_ptr()
+								.expect("menu events only fire after the app is built");
+							window.request_open(
+								Path::new(&view.path),
+								OpenRequest {
+									track: false,
+									title_override: Some(title),
+									initial_caret: Some(view.caret),
+									..OpenRequest::default()
+								},
+							);
 						}
 						unavailable => {
 							let message = if unavailable.is_none() {
@@ -1639,18 +1744,7 @@ impl MainWindow {
 					help::handle_view_help_browser(&frame_copy);
 				}
 				menu_ids::VIEW_HELP_PAPERBACK => {
-					if help::handle_view_help_paperback(&frame_copy, &dm, &config) {
-						{
-							let dm_ref = dm.lock().unwrap();
-							update_title_from_manager(&frame_copy, &dm_ref);
-							dm_ref.restore_focus();
-						}
-						let menu_bar = menu::create_menu_bar(&config.lock().unwrap());
-						frame_copy.set_menu_bar(menu_bar);
-						menu::update_menu_item_states(&frame_copy, true);
-						let has_reopen = dm.lock().unwrap().has_recently_closed();
-						menu::update_reopen_state(&frame_copy, has_reopen);
-					}
+					help::handle_view_help_paperback(&frame_copy);
 				}
 				menu_ids::CHECK_FOR_UPDATES => {
 					let channel = get_update_channel(&config.lock().unwrap());
@@ -1669,22 +1763,9 @@ impl MainWindow {
 						if let Ok(doc_index) = usize::try_from(doc_index)
 							&& let Some(path) = recent_docs.get(doc_index)
 						{
-							let path = Path::new(path);
-							if !dialogs::ensure_parser_ready_for_path(&frame_copy, path, &config) {
-								return;
-							}
-							if dm.lock().unwrap().open_file(&dm, path) {
-								{
-									let dm_ref = dm.lock().unwrap();
-									update_title_from_manager(&frame_copy, &dm_ref);
-									dm_ref.restore_focus();
-								}
-								let menu_bar = menu::create_menu_bar(&config.lock().unwrap());
-								frame_copy.set_menu_bar(menu_bar);
-								menu::update_menu_item_states(&frame_copy, true);
-								let has_reopen = dm.lock().unwrap().has_recently_closed();
-								menu::update_reopen_state(&frame_copy, has_reopen);
-							}
+							let window = super::app::main_window_from_ptr()
+								.expect("menu events only fire after the app is built");
+							window.request_open(Path::new(path), OpenRequest::default());
 						}
 					} else if id == menu_ids::SHOW_ALL_DOCUMENTS {
 						let has_documents = {
@@ -1717,42 +1798,20 @@ impl MainWindow {
 							}
 						}
 						if let Some(path) = result.open {
-							let path_buf = Path::new(&path).to_path_buf();
-							let path = path_buf.as_path();
-							if !dialogs::ensure_parser_ready_for_path(&frame_copy, path, &config) {
-								return;
-							}
-							if dm.lock().unwrap().open_file(&dm, path) {
-								{
-									let dm_ref = dm.lock().unwrap();
-									update_title_from_manager(&frame_copy, &dm_ref);
-									dm_ref.restore_focus();
-								}
-								let menu_bar = menu::create_menu_bar(&config.lock().unwrap());
-								frame_copy.set_menu_bar(menu_bar);
-								menu::update_menu_item_states(&frame_copy, true);
-								let has_reopen = dm.lock().unwrap().has_recently_closed();
-								menu::update_reopen_state(&frame_copy, has_reopen);
-							} else {
-								let menu_bar = menu::create_menu_bar(&config.lock().unwrap());
-								frame_copy.set_menu_bar(menu_bar);
-								let dm_ref = dm.lock().unwrap();
-								let has_docs = dm_ref.tab_count() > 0;
-								let has_reopen = dm_ref.has_recently_closed();
-								drop(dm_ref);
-								menu::update_menu_item_states(&frame_copy, has_docs);
-								menu::update_reopen_state(&frame_copy, has_reopen);
-							}
-						} else {
-							let menu_bar = menu::create_menu_bar(&config.lock().unwrap());
-							frame_copy.set_menu_bar(menu_bar);
-							let dm_ref = dm.lock().unwrap();
-							let has_docs = dm_ref.tab_count() > 0;
-							let has_reopen = dm_ref.has_recently_closed();
-							drop(dm_ref);
-							menu::update_menu_item_states(&frame_copy, has_docs);
-							menu::update_reopen_state(&frame_copy, has_reopen);
+							let window = super::app::main_window_from_ptr()
+								.expect("menu events only fire after the app is built");
+							window.request_open(Path::new(&path), OpenRequest::default());
 						}
+						// The dialog closes tabs as well as opening one, so the menus need
+						// refreshing even when nothing was opened.
+						let menu_bar = menu::create_menu_bar(&config.lock().unwrap());
+						frame_copy.set_menu_bar(menu_bar);
+						let dm_ref = dm.lock().unwrap();
+						let has_docs = dm_ref.tab_count() > 0;
+						let has_reopen = dm_ref.has_recently_closed();
+						drop(dm_ref);
+						menu::update_menu_item_states(&frame_copy, has_docs);
+						menu::update_reopen_state(&frame_copy, has_reopen);
 					}
 				}
 			}

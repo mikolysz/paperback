@@ -588,23 +588,6 @@ msgstr ""
 msgid "Word Count"
 msgstr ""
 
-#. TRANSLATORS: Error message shown when the requested document file does not exist; {} is the file path
-msgid "File not found: {}"
-msgstr ""
-
-#. TRANSLATORS: Prompt asking whether to import a document's previously saved settings and bookmarks found alongside it
-msgid ""
-"A .paperback file was found for this document. Would you like to import it?"
-msgstr ""
-
-#. TRANSLATORS: Title of the dialog prompting to import a document's saved settings and bookmarks
-msgid "Import document data"
-msgstr ""
-
-#. TRANSLATORS: Error shown when the user dismisses the password prompt for an encrypted document without entering one
-msgid "Password is required."
-msgstr ""
-
 #. TRANSLATORS: Announcement read by screen readers after following an internal link within the document
 msgid "Navigated to internal link."
 msgstr ""
@@ -745,6 +728,23 @@ msgstr ""
 
 #. TRANSLATORS: Main window title when no document is open
 msgid "Paperback"
+msgstr ""
+
+#. TRANSLATORS: Error message shown when the requested document file does not exist; {} is the file path
+msgid "File not found: {}"
+msgstr ""
+
+#. TRANSLATORS: Prompt asking whether to import a document's previously saved settings and bookmarks found alongside it
+msgid ""
+"A .paperback file was found for this document. Would you like to import it?"
+msgstr ""
+
+#. TRANSLATORS: Title of the dialog prompting to import a document's saved settings and bookmarks
+msgid "Import document data"
+msgstr ""
+
+#. TRANSLATORS: Error shown when the user dismisses the password prompt for an encrypted document without entering one
+msgid "Password is required."
 msgstr ""
 
 #. TRANSLATORS: Message shown when the user tries to perform an action while a help/documentation Web View window is open

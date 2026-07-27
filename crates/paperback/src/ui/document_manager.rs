@@ -93,103 +93,6 @@ impl DocumentManager {
 		}
 	}
 
-	pub fn open_file(&mut self, self_rc: &Rc<Mutex<Self>>, path: &Path) -> bool {
-		self.open_file_impl(self_rc, path, true, false, None)
-	}
-
-	pub fn open_file_restore(&mut self, self_rc: &Rc<Mutex<Self>>, path: &Path) -> bool {
-		self.open_file_impl(self_rc, path, true, true, None)
-	}
-
-	pub fn open_help_file(&mut self, self_rc: &Rc<Mutex<Self>>, path: &Path) -> bool {
-		self.open_file_impl(self_rc, path, false, false, None)
-	}
-
-	/// Opens a synthetic source-view document (untracked) with an explicit tab title.
-	pub fn open_source_file(&mut self, self_rc: &Rc<Mutex<Self>>, path: &Path, title: &str) -> bool {
-		self.open_file_impl(self_rc, path, false, false, Some(title))
-	}
-
-	fn open_file_impl(
-		&mut self,
-		self_rc: &Rc<Mutex<Self>>,
-		path: &Path,
-		track: bool,
-		is_restore: bool,
-		title_override: Option<&str>,
-	) -> bool {
-		if !path.exists() {
-			// TRANSLATORS: Error message shown when the requested document file does not exist; {} is the file path
-			let template = t("File not found: {}");
-			let message = template.replace("{}", &path.to_string_lossy());
-			// TRANSLATORS: Generic error dialog title
-			show_error_dialog(&self.notebook, &message, &t("Error"));
-			return false;
-		}
-		if let Some(index) = self.find_tab_by_path(path) {
-			self.notebook.set_selection(index);
-			return true;
-		}
-
-		let import_path = path.with_extension("paperback");
-		if !is_restore && import_path.exists() {
-			// TRANSLATORS: Prompt asking whether to import a document's previously saved settings and bookmarks found alongside it
-			let message = t("A .paperback file was found for this document. Would you like to import it?");
-			// TRANSLATORS: Title of the dialog prompting to import a document's saved settings and bookmarks
-			let title = t("Import document data");
-			let dialog = MessageDialog::builder(&self.notebook, &message, &title)
-				.with_style(MessageDialogStyle::YesNo | MessageDialogStyle::IconQuestion | MessageDialogStyle::Centre)
-				.build();
-			if dialog.show_modal() == ID_YES {
-				let config = self.config.lock().unwrap();
-				config.import_settings_from_file(&path.to_string_lossy(), import_path.to_str().unwrap());
-			}
-		}
-
-		let (password, forced_extension, render_tables_inline) = {
-			let config = self.config.lock().unwrap();
-			let path_str = path.to_string_lossy();
-			config.refresh_document_hash(&path_str);
-			let forced_extension = config.get_document_format(&path_str);
-			let password = config.get_document_password(&path_str);
-			let render_tables_inline = config.get_app_bool("render_tables_inline", true);
-			drop(config);
-			(password, forced_extension, render_tables_inline)
-		};
-		let path_str = path.to_string_lossy().to_string();
-		tracing::info!(path = %path.display(), "opening document");
-		match DocumentSession::new(&path_str, &password, &forced_extension, render_tables_inline) {
-			Ok(session) => self.add_session_tab(self_rc, path, session, &password, track, title_override),
-			Err(err) => {
-				if err.starts_with(PASSWORD_REQUIRED_ERROR_PREFIX) {
-					let config = self.config.lock().unwrap();
-					config.set_document_password(&path_str, "");
-					drop(config);
-					let password = prompt_for_password(&self.notebook, path);
-					let Some(password) = password else {
-						// TRANSLATORS: Error shown when the user dismisses the password prompt for an encrypted document without entering one
-						show_error_dialog(&self.notebook, &t("Password is required."), &t("Error"));
-						return false;
-					};
-					match DocumentSession::new(&path_str, &password, &forced_extension, render_tables_inline) {
-						Ok(session) => self.add_session_tab(self_rc, path, session, &password, track, title_override),
-						Err(retry_error) => {
-							tracing::error!(path = %path.display(), error = %retry_error, "failed to open document");
-							let message = build_document_load_error_message(path, &retry_error);
-							show_error_dialog(&self.notebook, &message, &t("Error"));
-							false
-						}
-					}
-				} else {
-					tracing::error!(path = %path.display(), error = %err, "failed to open document");
-					let message = build_document_load_error_message(path, &err);
-					show_error_dialog(&self.notebook, &message, &t("Error"));
-					false
-				}
-			}
-		}
-	}
-
 	pub fn add_session_tab(
 		&mut self,
 		self_rc: &Rc<Mutex<Self>>,
@@ -839,7 +742,7 @@ fn normalized_path_key(path: &Path) -> String {
 
 /// Prompts for an encrypted document's password. The prompt names the document so the user can
 /// tell which one is being asked about.
-fn prompt_for_password(parent: &dyn WxWidget, path: &Path) -> Option<String> {
+pub(super) fn prompt_for_password(parent: &dyn WxWidget, path: &Path) -> Option<String> {
 	// wx treats `&` in labels as a mnemonic marker, so a filename ampersand must be doubled to
 	// display literally.
 	let filename = title_or_filename(String::new(), path).replace('&', "&&");
@@ -853,14 +756,14 @@ fn prompt_for_password(parent: &dyn WxWidget, path: &Path) -> Option<String> {
 	dialog.get_value().filter(|value| !value.trim().is_empty())
 }
 
-fn show_error_dialog(parent: &dyn WxWidget, message: &str, title: &str) {
+pub(super) fn show_error_dialog(parent: &dyn WxWidget, message: &str, title: &str) {
 	let dialog = MessageDialog::builder(parent, message, title)
 		.with_style(MessageDialogStyle::OK | MessageDialogStyle::IconError | MessageDialogStyle::Centre)
 		.build();
 	dialog.show_modal();
 }
 
-fn build_document_load_error_message(path: &Path, error: &str) -> String {
+pub(super) fn build_document_load_error_message(path: &Path, error: &str) -> String {
 	let details = error.trim().strip_prefix(PASSWORD_REQUIRED_ERROR_PREFIX).map_or_else(|| error.trim(), str::trim);
 	if details.is_empty() {
 		// TRANSLATORS: Generic error message shown when a document fails to load with no further detail available

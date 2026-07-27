@@ -13,13 +13,13 @@ mod lang_readmes {
 	include!(concat!(env!("OUT_DIR"), "/lang_readmes.rs"));
 }
 
-use paperback_core::{config::ConfigManager, version};
+use paperback_core::version;
 use patois::t;
 use ship_shape::{UpdateChannel as ShipChannel, UpdaterConfig};
 use wx_utils::show_error;
 use wxdragon::prelude::*;
 
-use super::{dialogs, document_manager::DocumentManager};
+use super::document_manager::DocumentManager;
 use crate::{config_ext::UpdateChannel, translation_manager::TranslationManager};
 
 pub static MAIN_WINDOW_PTR: AtomicUsize = AtomicUsize::new(0);
@@ -123,24 +123,18 @@ pub fn handle_view_help_browser(frame: &Frame) {
 	}
 }
 
-pub fn handle_view_help_paperback(
-	frame: &Frame,
-	doc_manager: &Rc<Mutex<DocumentManager>>,
-	config: &Rc<Mutex<ConfigManager>>,
-) -> bool {
+pub fn handle_view_help_paperback(frame: &Frame) {
 	let Some(path) = readme_path() else {
 		// TRANSLATORS: Error shown when the bundled help/readme file could not be located on disk
 		show_error(frame, t("readme.html not found. Please ensure the application was built properly."), &t("Error"));
-		return false;
+		return;
 	};
 	if !path.exists() {
 		show_error(frame, t("readme.html not found. Please ensure the application was built properly."), &t("Error"));
-		return false;
+		return;
 	}
-	if !dialogs::ensure_parser_ready_for_path(frame, &path, config) {
-		return false;
-	}
-	doc_manager.lock().unwrap().open_help_file(doc_manager, &path)
+	let window = super::app::main_window_from_ptr().expect("menu events only fire after the app is built");
+	window.request_open(&path, super::main_window::OpenRequest { track: false, ..Default::default() });
 }
 
 pub fn handle_donate(frame: &Frame) {
