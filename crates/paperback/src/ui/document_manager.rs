@@ -266,7 +266,14 @@ impl DocumentManager {
 		}
 		if let Some(tab) = self.tabs.get(index) {
 			tracing::info!(path = %tab.file_path.display(), "closing document");
-			self.recently_closed.push(tab.file_path.clone());
+			// Only tracked documents are reopenable: synthetic tabs (help, View
+			// Source) point at temp files, and reopening one through the generic
+			// open path would treat it as a regular document — tracking it,
+			// adding it to the recents menu, and restoring it on next launch
+			// under its raw internal filename.
+			if tab.track {
+				self.recently_closed.push(tab.file_path.clone());
+			}
 			let path_str = tab.file_path.to_string_lossy();
 			let config = self.config.lock().unwrap();
 			if save_state && tab.track {
