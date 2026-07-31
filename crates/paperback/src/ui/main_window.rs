@@ -625,11 +625,15 @@ impl MainWindow {
 				menu_ids::REOPEN_LAST_CLOSED => {
 					let path = dm.lock().unwrap().pop_recently_closed();
 					if let Some(path) = path {
-						if !ensure_parser_ready_for_path(&frame_copy, &path, &config) {
-							dm.lock().unwrap().push_recently_closed(path);
-							return;
-						}
-						if dm.lock().unwrap().open_file(&dm, &path) {
+						// A reopen entry's format is always resolvable without prompting:
+						// the document was opened this run, and the only way to lose a
+						// remembered format — removing the document from history — also
+						// removes it from the reopen stack. A failure therefore means the
+						// file itself is unopenable, and the entry is dropped rather than
+						// retried.
+						if ensure_parser_ready_for_path(&frame_copy, &path, &config)
+							&& dm.lock().unwrap().open_file(&dm, &path)
+						{
 							let dm_ref = dm.lock().unwrap();
 							update_title_from_manager(&frame_copy, &dm_ref);
 							dm_ref.restore_focus();
@@ -1720,6 +1724,10 @@ impl MainWindow {
 									dm_ref.close_document(index, false);
 								}
 							}
+							// Runs after the close loop: close_document pushes the closed
+							// tab onto the reopen stack, and a removed document must not
+							// stay reopenable.
+							dm_ref.forget_recently_closed(&result.paths_removed);
 							if !result.paths_to_close.is_empty() {
 								update_title_from_manager(&frame_copy, &dm_ref);
 								dm_ref.restore_focus();

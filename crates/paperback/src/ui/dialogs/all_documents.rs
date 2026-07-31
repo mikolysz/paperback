@@ -18,6 +18,9 @@ const KEY_NUMPAD_ENTER: i32 = 370;
 pub struct AllDocumentsResult {
 	pub open: Option<String>,
 	pub paths_to_close: Vec<String>,
+	/// Every path whose history was deleted (Remove and Clear All), open or not.
+	/// `paths_to_close` is the subset of these that had an open tab.
+	pub paths_removed: Vec<String>,
 }
 
 pub fn show_all_documents_dialog(
@@ -31,6 +34,7 @@ pub fn show_all_documents_dialog(
 	let dialog = Dialog::builder(parent, &dialog_title).build();
 	let selected_path = Rc::new(Mutex::new(None));
 	let paths_to_close: Rc<Mutex<Vec<String>>> = Rc::new(Mutex::new(Vec::new()));
+	let paths_removed: Rc<Mutex<Vec<String>>> = Rc::new(Mutex::new(Vec::new()));
 	// TRANSLATORS: Label for the search input field in the All Documents dialog
 	let search_label = StaticText::builder(&dialog).with_label(&t("&search")).build();
 	let search_ctrl = TextCtrl::builder(&dialog).with_size(Size::new(300, -1)).build();
@@ -62,6 +66,7 @@ pub fn show_all_documents_dialog(
 		Rc::clone(config),
 		Rc::clone(&open_paths),
 		Rc::clone(&paths_to_close),
+		Rc::clone(&paths_removed),
 	);
 	remove_button.on_click({
 		let remove_action = Rc::clone(&remove_action);
@@ -90,6 +95,7 @@ pub fn show_all_documents_dialog(
 		Rc::clone(config),
 		Rc::clone(&open_paths),
 		Rc::clone(&paths_to_close),
+		Rc::clone(&paths_removed),
 	);
 	bind_all_documents_search(
 		search_ctrl,
@@ -119,6 +125,7 @@ pub fn show_all_documents_dialog(
 	AllDocumentsResult {
 		open: selected_path.lock().unwrap().clone(),
 		paths_to_close: paths_to_close.lock().unwrap().clone(),
+		paths_removed: paths_removed.lock().unwrap().clone(),
 	}
 }
 
@@ -237,6 +244,7 @@ fn make_all_documents_remove_action(
 	config: Rc<Mutex<ConfigManager>>,
 	open_paths: Rc<Vec<String>>,
 	paths_to_close: Rc<Mutex<Vec<String>>>,
+	paths_removed: Rc<Mutex<Vec<String>>>,
 ) -> Rc<dyn Fn()> {
 	Rc::new(move || {
 		let indices = get_selected_indices(list);
@@ -275,6 +283,7 @@ fn make_all_documents_remove_action(
 				}
 			}
 		}
+		paths_removed.lock().unwrap().extend(paths_to_remove.iter().cloned());
 		let new_selection = indices.iter().copied().max();
 		let filter = search_ctrl.get_value();
 		populate_document_list(&DocumentListParams {
@@ -302,6 +311,7 @@ fn bind_all_documents_clear(
 	config: Rc<Mutex<ConfigManager>>,
 	open_paths: Rc<Vec<String>>,
 	paths_to_close: Rc<Mutex<Vec<String>>>,
+	paths_removed: Rc<Mutex<Vec<String>>>,
 ) {
 	clear_button.on_click(move |_| {
 		if list.get_item_count() == 0 {
@@ -331,6 +341,7 @@ fn bind_all_documents_clear(
 				cfg.remove_document_history(path);
 			}
 			cfg.flush();
+			paths_removed.lock().unwrap().extend(all_docs.iter().cloned());
 		}
 		search_ctrl.set_value("");
 		populate_document_list(&DocumentListParams {

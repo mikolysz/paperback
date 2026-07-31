@@ -381,12 +381,19 @@ impl DocumentManager {
 		self.recently_closed.pop()
 	}
 
-	pub fn push_recently_closed(&mut self, path: PathBuf) {
-		self.recently_closed.push(path);
-	}
-
 	pub const fn has_recently_closed(&self) -> bool {
 		!self.recently_closed.is_empty()
+	}
+
+	/// The reopen stack is part of document history: removing a document from
+	/// history also forgets it here. This keeps the invariant that every stack
+	/// entry has a resolvable format (its extension is known or its format is
+	/// remembered in the config), so reopening never has to prompt.
+	pub fn forget_recently_closed(&mut self, removed: &[String]) {
+		self.recently_closed.retain(|path| {
+			let path = path.to_string_lossy();
+			!removed.iter().any(|r| r.as_str() == path)
+		});
 	}
 
 	pub const fn notebook(&self) -> &Notebook {
