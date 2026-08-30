@@ -23,6 +23,8 @@ jobs:
   test:
     name: Tests
     runs-on: windows-latest
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -64,6 +66,8 @@ jobs:
   test-macos:
     name: Tests (macOS)
     runs-on: macos-latest
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v7
         with:
