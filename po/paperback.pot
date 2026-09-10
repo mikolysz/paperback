@@ -3850,3 +3850,6 @@ msgstr ""
 #: kt
 msgid "With TalkBack, swipe up on the play button to move forward, or down to move back."
 msgstr ""
+
+msgid "Math"
+msgstr ""
