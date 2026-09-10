@@ -1,6 +1,36 @@
 use scraper::{ElementRef, Html, Node};
 
-use crate::util::text::{collapse_whitespace, display_len, trim_string};
+use crate::{
+	types::MathInfo,
+	util::text::{collapse_whitespace, display_len, trim_string},
+};
+
+/// Text and formula spans travel together as cells and rows are joined.
+#[derive(Default)]
+struct TableText {
+	text: String,
+	maths: Vec<MathInfo>,
+}
+
+impl TableText {
+	fn join(parts: Vec<Self>, separator: &str) -> Self {
+		let mut joined = Self::default();
+		let mut offset = 0;
+		for (index, part) in parts.into_iter().enumerate() {
+			if index > 0 {
+				joined.text.push_str(separator);
+				offset += display_len(separator);
+			}
+			joined.maths.extend(part.maths.into_iter().map(|mut math| {
+				math.offset += offset;
+				math
+			}));
+			offset += display_len(&part.text);
+			joined.text.push_str(&part.text);
+		}
+		joined
+	}
+}
 
 /// `<table>…</table>` HTML -> tab-separated text: rows by '\n', cells (`<td>`/`<th>`) by '\t'.
 /// Cell text whitespace-collapsed + trimmed; internal '\t'/'\n' -> space; nested tables flattened.
@@ -13,9 +43,9 @@ pub fn html_table_to_tsv(html: &str) -> String {
 	let Some(table) = find_first_table(fragment.tree.root()) else {
 		return String::new();
 	};
-	let mut rows: Vec<String> = Vec::new();
+	let mut rows = Vec::new();
 	collect_rows(table, &mut rows);
-	rows.join("\n")
+	TableText::join(rows, "\n").text
 }
 
 /// Produce the on-screen text for a table in the requested display mode (see `tsv_to_display`).
@@ -65,9 +95,9 @@ pub fn table_caption_from_html(html: &str) -> Option<String> {
 		return Some(caption);
 	}
 	// Reuse the already-parsed tree instead of calling html_table_to_tsv(html) again.
-	let mut rows: Vec<String> = Vec::new();
+	let mut rows = Vec::new();
 	collect_rows(table, &mut rows);
-	let first_row = first_tsv_row_text(&rows.join("\n"));
+	let first_row = first_tsv_row_text(&TableText::join(rows, "\n").text);
 	if first_row.is_empty() { None } else { Some(first_row) }
 }
 
@@ -101,6 +131,8 @@ pub struct TableRenderBundle {
 	pub caption: String,
 	pub lines: Vec<String>,
 	pub display_length: usize,
+	/// Formula spans relative to the displayed table, not to its source markup.
+	pub maths: Vec<MathInfo>,
 }
 
 /// Split `display_text` into lines and compute the total display-unit length (each line's
@@ -128,19 +160,29 @@ pub fn push_finalized_line(lines: &mut Vec<String>, cached_len: &mut usize, line
 pub fn table_render_bundle(html: &str, inline: bool) -> TableRenderBundle {
 	// Parse the HTML once; derive TSV, caption, and display text from the same tree.
 	let fragment = Html::parse_fragment(html);
-	let (tsv, caption) = find_first_table(fragment.tree.root()).map_or_else(
-		|| (String::new(), table_caption_from_tsv("")),
+	let (rendered, caption) = find_first_table(fragment.tree.root()).map_or_else(
+		|| (TableText::default(), table_caption_from_tsv("")),
 		|table| {
-			let mut rows: Vec<String> = Vec::new();
+			let mut rows = Vec::new();
 			collect_rows(table, &mut rows);
-			let tsv = rows.join("\n");
+			let rendered = TableText::join(rows, "\n");
 			// Prefer an explicit <caption> element; fall back to the first TSV row.
-			let caption = caption_element_text(table).unwrap_or_else(|| table_caption_from_tsv(&tsv));
-			(tsv, caption)
+			let caption = caption_element_text(table).unwrap_or_else(|| table_caption_from_tsv(&rendered.text));
+			(rendered, caption)
 		},
 	);
-	let (lines, display_length) = display_lines_and_length(&tsv_to_display(&tsv, inline));
-	TableRenderBundle { caption, lines, display_length }
+	let mut maths = rendered.maths;
+	if !inline {
+		// Only the first row is visible in placeholder mode. Hidden rows must not leave
+		// activatable markers pointing into the text following the table.
+		let first_row_length = display_len(rendered.text.split('\n').next().unwrap_or(""));
+		maths.retain(|math| math.offset < first_row_length);
+		for math in &mut maths {
+			math.offset += display_len("[Table]: ");
+		}
+	}
+	let (lines, display_length) = display_lines_and_length(&tsv_to_display(&rendered.text, inline));
+	TableRenderBundle { caption, lines, display_length, maths }
 }
 
 /// Find the first (outermost) `<table>` element in document order, descending through wrappers.
@@ -160,7 +202,7 @@ fn find_first_table(node: ego_tree::NodeRef<'_, Node>) -> Option<ego_tree::NodeR
 
 /// Gather the rows of `table`, descending through grouping wrappers (`thead`/`tbody`/`tfoot`)
 /// to reach `<tr>` elements, but never descending into a nested table.
-fn collect_rows(node: ego_tree::NodeRef<'_, Node>, rows: &mut Vec<String>) {
+fn collect_rows(node: ego_tree::NodeRef<'_, Node>, rows: &mut Vec<TableText>) {
 	for child in node.children() {
 		if let Node::Element(element) = child.value() {
 			match element.name() {
@@ -175,17 +217,17 @@ fn collect_rows(node: ego_tree::NodeRef<'_, Node>, rows: &mut Vec<String>) {
 
 /// Collect the cells of a single row, joined by tabs. Recurses through wrapper elements to find
 /// `<td>`/`<th>` but stops at nested tables (their cells are flattened into the parent cell text).
-fn collect_row(row: ego_tree::NodeRef<'_, Node>) -> String {
-	let mut cells: Vec<String> = Vec::new();
+fn collect_row(row: ego_tree::NodeRef<'_, Node>) -> TableText {
+	let mut cells = Vec::new();
 	collect_cells(row, &mut cells);
-	cells.join("\t")
+	TableText::join(cells, "\t")
 }
 
-fn collect_cells(node: ego_tree::NodeRef<'_, Node>, cells: &mut Vec<String>) {
+fn collect_cells(node: ego_tree::NodeRef<'_, Node>, cells: &mut Vec<TableText>) {
 	for child in node.children() {
 		if let Node::Element(element) = child.value() {
 			match element.name() {
-				"td" | "th" => cells.push(cell_text(child)),
+				"td" | "th" => cells.push(cell_contents(child)),
 				// A nested table inside a row (but outside a cell) is not part of this grid.
 				"table" => {}
 				_ => collect_cells(child, cells),
@@ -198,11 +240,15 @@ fn collect_cells(node: ego_tree::NodeRef<'_, Node>, cells: &mut Vec<String>) {
 /// `<br>` rendered as a space, then whitespace-collapsed, trimmed, and any residual `\t`/`\n`
 /// replaced by a single space. Nested tables contribute only their text (no grid structure).
 fn cell_text(cell: ego_tree::NodeRef<'_, Node>) -> String {
-	let mut raw = String::new();
-	collect_dom_text(cell, &mut raw, true);
-	let collapsed = collapse_whitespace(&raw);
-	let trimmed = trim_string(&collapsed);
-	trimmed.replace(['\t', '\n'], " ")
+	cell_contents(cell).text
+}
+
+fn cell_contents(cell: ego_tree::NodeRef<'_, Node>) -> TableText {
+	let mut rendered = TableText::default();
+	collect_dom_text_with_math(cell, &mut rendered.text, true, Some(&mut rendered.maths));
+	let collapsed = collapse_whitespace(&rendered.text);
+	rendered.text = trim_string(&collapsed).replace(['\t', '\n'], " ");
+	rendered
 }
 
 /// Recursively concatenates the descendant text nodes of `node` into `buffer`. When
@@ -211,11 +257,30 @@ fn cell_text(cell: ego_tree::NodeRef<'_, Node>) -> String {
 /// `cell_text` above (`br_as_space: true`) and by `HtmlToText`'s title/heading/list-item/
 /// figcaption text extraction (`br_as_space: false`, its existing behavior).
 pub(crate) fn collect_dom_text(node: ego_tree::NodeRef<'_, Node>, buffer: &mut String, br_as_space: bool) {
+	collect_dom_text_with_math(node, buffer, br_as_space, None);
+}
+
+fn collect_dom_text_with_math(
+	node: ego_tree::NodeRef<'_, Node>,
+	buffer: &mut String,
+	br_as_space: bool,
+	mut maths: Option<&mut Vec<MathInfo>>,
+) {
 	match node.value() {
 		Node::Text(text) => buffer.push_str(&text.text),
 		Node::Element(element) => {
 			if element.name() == "math" {
-				if let Some(text) = ElementRef::wrap(node).and_then(super::math::dom_math_text) {
+				if let Some(element) = ElementRef::wrap(node)
+					&& let Some(text) = super::math::dom_math_text(element)
+				{
+					if let Some(maths) = maths {
+						maths.push(MathInfo {
+							offset: display_len(collapse_whitespace(buffer).trim_start()),
+							length: display_len(&text),
+							text: text.clone(),
+							mathml: super::math::dom_math_fragment(element),
+						});
+					}
 					buffer.push_str(&text);
 				}
 				return;
@@ -224,7 +289,7 @@ pub(crate) fn collect_dom_text(node: ego_tree::NodeRef<'_, Node>, buffer: &mut S
 				buffer.push(' ');
 			}
 			for child in node.children() {
-				collect_dom_text(child, buffer, br_as_space);
+				collect_dom_text_with_math(child, buffer, br_as_space, maths.as_deref_mut());
 			}
 		}
 		_ => {}

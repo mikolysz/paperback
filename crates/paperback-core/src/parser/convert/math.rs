@@ -1,4 +1,4 @@
-//! MathML conversion shared by the XML/HTML text engines. MathCAT's rules are embedded;
+//! `MathML` conversion shared by the XML/HTML text engines. `MathCAT`'s rules are embedded;
 //! its per-thread state is initialized lazily, including on EPUB's rayon workers.
 
 use std::{
@@ -44,7 +44,7 @@ fn init() -> bool {
 	true
 }
 
-/// AsciiMath when conversion succeeds, then the author's alternative text, then raw text.
+/// `AsciiMath` when conversion succeeds, then the author's alternative text, then raw text.
 /// An empty expression with no fallback emits neither text nor a marker.
 pub(super) fn math_text(mathml: &str, alttext: Option<&str>, text_content: impl FnOnce() -> String) -> Option<String> {
 	asciimath(mathml).or_else(|| alttext.and_then(normalized_text)).or_else(|| normalized_text(&text_content()))
@@ -88,11 +88,11 @@ fn asciimath(mathml: &str) -> Option<String> {
 	rendered
 }
 
-/// Serialize an isolated XML MathML subtree. Working from the parsed tree expands entities
-/// and resolves inherited/mixed MathML prefixes; string replacement cannot do either safely.
+/// Serialize an isolated XML subtree. Working from the parsed tree expands entities
+/// and resolves inherited/mixed `MathML` prefixes; string replacement cannot do either safely.
 pub(super) fn xml_fragment(node: Node<'_, '_>) -> String {
 	let mut output = String::new();
-	serialize_xml(node, node.tag_name().namespace(), "", &mut output);
+	serialize_xml(node, None, "", &mut output);
 	output
 }
 
@@ -105,7 +105,8 @@ fn serialize_xml(node: Node<'_, '_>, math_namespace: Option<&str>, inherited_nam
 		return;
 	}
 	let name = node.tag_name().name();
-	let namespace = if node.tag_name().namespace() == math_namespace {
+	let math_namespace = if name == "math" { Some(node.tag_name().namespace().unwrap_or("")) } else { math_namespace };
+	let namespace = if math_namespace == Some(node.tag_name().namespace().unwrap_or("")) {
 		MATHML_NAMESPACE
 	} else {
 		node.tag_name().namespace().unwrap_or("")
@@ -154,7 +155,7 @@ fn serialize_xml(node: Node<'_, '_>, math_namespace: Option<&str>, inherited_nam
 }
 
 /// Text extraction for headings, list labels and links must use the same formula rendering
-/// as the reading buffer, rather than concatenating MathML's token/annotation text.
+/// as the reading buffer, rather than concatenating `MathML`'s token/annotation text.
 pub(super) fn collect_xml_text(node: Node<'_, '_>) -> String {
 	fn collect(node: Node<'_, '_>, output: &mut String) {
 		if node.is_element() && node.tag_name().name() == "math" {
@@ -177,7 +178,13 @@ pub(super) fn collect_xml_text(node: Node<'_, '_>) -> String {
 }
 
 pub(super) fn dom_math_text(element: ElementRef<'_>) -> Option<String> {
-	math_text(&element.html(), element.attr("alttext"), || element.text().collect())
+	math_text(&dom_math_fragment(element), element.attr("alttext"), || element.text().collect())
+}
+
+pub(super) fn dom_math_fragment(element: ElementRef<'_>) -> String {
+	// html5ever serializes U+00A0 as an HTML named entity; XML has no built-in nbsp.
+	// Keep the fragment usable as standalone MathML as well as in the browser.
+	element.html().replace("&nbsp;", "&#160;")
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ use crate::{
 		format_spans::FormatKind,
 		line_builder::LineBuilder,
 		list_style::ListStyle,
-		math::dom_math_text,
+		math::{dom_math_fragment, dom_math_text},
 		table_text::{collect_dom_text, table_render_bundle},
 	},
 	t,
@@ -36,7 +36,7 @@ impl HtmlToText {
 				let tag_name = element.name();
 				if tag_name == "math" {
 					if self.flags.contains(ProcessingFlags::IN_BODY) {
-						self.handle_math(node, document);
+						self.handle_math(node);
 					}
 					return;
 				}
@@ -71,7 +71,7 @@ impl HtmlToText {
 		}
 	}
 
-	fn handle_math(&mut self, node: NodeRef<'_, Node>, document: &Html) {
+	fn handle_math(&mut self, node: NodeRef<'_, Node>) {
 		let Some(element) = ElementRef::wrap(node) else { return };
 		let Some(rendered) = dom_math_text(element) else { return };
 		let in_link = self.flags.contains(ProcessingFlags::IN_LINK);
@@ -80,7 +80,13 @@ impl HtmlToText {
 			self.text.finalize_current_line();
 		}
 		let offset = if in_link {
-			self.link_start_pos + display_len(&collapse_whitespace(&self.current_link_text))
+			// Link text is deferred until </a>. Measure it with the preceding line so
+			// collapsed whitespace at their boundary is counted exactly once.
+			let original_length = self.text.current_line.len();
+			self.text.current_line.push_str(&self.current_link_text);
+			let offset = self.text.get_current_text_position();
+			self.text.current_line.truncate(original_length);
+			offset
 		} else {
 			self.text.get_current_text_position()
 		};
@@ -101,7 +107,7 @@ impl HtmlToText {
 		if block {
 			self.text.finalize_current_line();
 		}
-		self.maths.push(MathInfo { offset, text: rendered, mathml: Self::serialize_node(node, document), length });
+		self.maths.push(MathInfo { offset, text: rendered, mathml: dom_math_fragment(element), length });
 	}
 
 	fn handle_table(&mut self, node: NodeRef<'_, Node>, document: &Html) {
@@ -112,6 +118,10 @@ impl HtmlToText {
 		// emit one cell per line. The helper output may contain tabs and span multiple lines; push
 		// each line verbatim so tab separators and empty cells survive whitespace collapsing.
 		let render = table_render_bundle(&table_html, self.render_tables_inline);
+		self.maths.extend(render.maths.into_iter().map(|mut math| {
+			math.offset += start_offset;
+			math
+		}));
 		for line in render.lines {
 			self.text.push_finalized_line(line);
 		}

@@ -227,7 +227,12 @@ impl XmlToText {
 
 	fn handle_table_xml(&mut self, node: Node<'_, '_>) {
 		self.text.finalize_current_line();
-		let table_xml = node.document().input_text()[node.range()].to_string();
+		let table_xml = if node.descendants().any(|child| child.is_element() && child.tag_name().name() == "math") {
+			// Detached source slices lose inherited MathML namespaces and prefixes.
+			xml_fragment(node)
+		} else {
+			node.document().input_text()[node.range()].to_string()
+		};
 		let start_offset = self.text.get_current_text_position();
 		self.resync_id_position(node, start_offset);
 		self.record_descendant_ids(node, start_offset);
@@ -235,6 +240,10 @@ impl XmlToText {
 		// emit one cell per line. The helper output may contain tabs and span multiple lines; push
 		// each line verbatim so tab separators and empty cells survive whitespace collapsing.
 		let render = table_render_bundle(&table_xml, self.render_tables_inline);
+		self.maths.extend(render.maths.into_iter().map(|mut math| {
+			math.offset += start_offset;
+			math
+		}));
 		for line in render.lines {
 			self.text.push_finalized_line(line);
 		}

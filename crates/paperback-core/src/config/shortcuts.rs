@@ -158,4 +158,19 @@ mod tests {
 		}
 		assert_eq!(total_actions, ActionId::all().len());
 	}
+
+	#[test]
+	fn formula_shortcuts_are_discoverable_and_customizable() {
+		let mut config = ShortcutsConfig::default();
+		assert_eq!(config.find_action(i32::from(b'M'), false, false, false), Some(ActionId::NextMath));
+		assert_eq!(config.find_action(i32::from(b'M'), false, false, true), Some(ActionId::PreviousMath));
+		assert_eq!(ActionId::NextMath.category(), ShortcutCategory::Go);
+		config.set_chord(ActionId::NextMath, Some(KeyChord::new(true, true, true, "M")));
+		assert_eq!(config.find_action(i32::from(b'M'), false, false, false), None);
+		assert_eq!(config.find_action(i32::from(b'M'), true, true, true), Some(ActionId::NextMath));
+		let serialized = toml::to_string(&config).unwrap();
+		assert!(serialized.contains("next_math"));
+		let restored: ShortcutsConfig = toml::from_str(&serialized).unwrap();
+		assert_eq!(restored.get_chord(ActionId::NextMath), config.get_chord(ActionId::NextMath));
+	}
 }

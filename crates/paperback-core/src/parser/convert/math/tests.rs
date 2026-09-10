@@ -73,9 +73,13 @@ struct Converted {
 }
 
 fn convert(body: &str, xml: bool) -> Converted {
+	convert_with_tables(body, xml, false)
+}
+
+fn convert_with_tables(body: &str, xml: bool, inline: bool) -> Converted {
 	let input = format!("<html><body>{body}</body></html>");
 	if xml {
-		let mut converter = XmlToText::new();
+		let mut converter = XmlToText::with_render_tables_inline(inline);
 		assert!(converter.convert(&input));
 		Converted {
 			text: converter.get_text(),
@@ -85,7 +89,7 @@ fn convert(body: &str, xml: bool) -> Converted {
 			ids: converter.get_id_positions().clone(),
 		}
 	} else {
-		let mut converter = HtmlToText::new();
+		let mut converter = HtmlToText::with_render_tables_inline(inline);
 		assert!(converter.convert(&input, HtmlSourceMode::NativeHtml));
 		Converted {
 			text: converter.get_text(),
@@ -165,4 +169,79 @@ fn prefixed_math_in_xml_is_converted() {
 	assert_eq!(converted.text, "Let sqrt(x).");
 	assert_eq!(converted.maths.len(), 1);
 	assert!(converted.maths[0].mathml.contains(MATHML_NAMESPACE));
+}
+
+#[rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
+fn table_math_spans_follow_cells_rows_and_placeholder_visibility(#[case] xml: bool, #[case] inline: bool) {
+	let converted = convert_with_tables(
+		"<p>Start</p><table><tr><td>  a <math><msup><mi>x</mi><mn>2</mn></msup></math></td><td> <math><msqrt><mi>y</mi></msqrt></math></td></tr><tr><td><math><mfrac><mi>a</mi><mi>b</mi></mfrac></math></td></tr></table><p>After</p>",
+		xml,
+		inline,
+	);
+	assert_eq!(
+		converted.text,
+		if inline { "Start\na x^2\tsqrt(y)\na/b\nAfter" } else { "Start\n[Table]: a x^2 sqrt(y)\nAfter" }
+	);
+	assert_eq!(converted.maths.len(), if inline { 3 } else { 2 });
+	let buffer = crate::document::DocumentBuffer::with_content(converted.text);
+	for math in converted.maths {
+		let start = buffer.byte_index_for_char(math.offset);
+		let end = buffer.byte_index_for_char(math.offset + math.length);
+		assert_eq!(&buffer.content[start..end], math.text);
+		assert!(math.mathml.contains("<math"));
+	}
+}
+
+#[test]
+fn prefixed_math_in_xml_table_keeps_inherited_namespaces() {
+	let converted = convert_with_tables(
+		r#"<div xmlns:m="http://www.w3.org/1998/Math/MathML"><table><tr><td><m:math><m:msqrt><m:mi>x</m:mi></m:msqrt></m:math></td></tr></table></div>"#,
+		true,
+		true,
+	);
+	assert_eq!(converted.text, "sqrt(x)");
+	assert_eq!(converted.maths.len(), 1);
+}
+
+#[test]
+fn html_math_fragment_does_not_leave_html_only_entities() {
+	let converted = convert("<math alttext='a&nbsp;b'><mtext>a&nbsp;b</mtext></math>", false);
+	let fragment = &converted.maths[0].mathml;
+	assert!(!fragment.contains("&nbsp;"));
+	let document = roxmltree::Document::parse(fragment).unwrap();
+	assert_eq!(document.root_element().attribute("alttext"), Some("a\u{00a0}b"));
+}
+
+#[rstest]
+#[case("")]
+#[case("Before ")]
+fn formula_in_link_counts_boundary_whitespace_once(#[case] prefix: &str) {
+	let converted = convert(&format!(r##"<p>{prefix}<a href="#x">  <math><mi>x</mi></math></a></p>"##), false);
+	assert_eq!(converted.text, format!("{prefix}x"));
+	assert_eq!(converted.maths[0].offset, display_len(prefix));
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn reusing_a_converter_clears_math_markers(#[case] xml: bool) {
+	let with_math = "<html><body><math><mi>x</mi></math></body></html>";
+	let plain = "<html><body>Plain</body></html>";
+	if xml {
+		let mut converter = XmlToText::new();
+		assert!(converter.convert(with_math));
+		assert_eq!(converter.get_maths().len(), 1);
+		assert!(converter.convert(plain));
+		assert!(converter.get_maths().is_empty());
+	} else {
+		let mut converter = HtmlToText::new();
+		assert!(converter.convert(with_math, HtmlSourceMode::NativeHtml));
+		assert_eq!(converter.get_maths().len(), 1);
+		assert!(converter.convert(plain, HtmlSourceMode::NativeHtml));
+		assert!(converter.get_maths().is_empty());
+	}
 }
