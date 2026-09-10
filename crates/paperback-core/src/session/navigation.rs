@@ -198,6 +198,15 @@ impl DocumentSession {
 		)
 	}
 
+	#[must_use]
+	pub fn navigate_math(&self, position: i64, wrap: bool, next: bool) -> NavigationResult {
+		self.navigate_with_post(
+			NavigateParams { position, wrap, next, target: NavTarget::Math, level_filter: 0 },
+			self.has_marker(MarkerType::Math),
+			|s, result| s.fill_marker_text_if_empty(result),
+		)
+	}
+
 	fn navigate_bookmark_inner(
 		&self,
 		config: &ConfigManager,

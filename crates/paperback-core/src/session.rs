@@ -134,6 +134,7 @@ pub enum SegmentTypeFfi {
 	Separator,
 	Image,
 	Figure,
+	Math,
 }
 
 #[derive(Debug, Clone, Copy)]
