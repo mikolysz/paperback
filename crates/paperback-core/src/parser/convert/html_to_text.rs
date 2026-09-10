@@ -6,7 +6,7 @@ use scraper::Html;
 use super::{format_spans::FormatSpans, line_builder::LineBuilder, list_style::ListStyle};
 use crate::{
 	parser::ConverterOutput,
-	types::{FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, SeparatorInfo, TableInfo},
+	types::{FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, MathInfo, SeparatorInfo, TableInfo},
 };
 
 bitflags! {
@@ -33,6 +33,7 @@ pub struct HtmlToText {
 	images: Vec<ImageInfo>,
 	figures: Vec<ImageInfo>,
 	tables: Vec<TableInfo>,
+	maths: Vec<MathInfo>,
 	separators: Vec<SeparatorInfo>,
 	lists: Vec<ListInfo>,
 	list_items: Vec<ListItemInfo>,
@@ -104,6 +105,11 @@ impl HtmlToText {
 	}
 
 	#[must_use]
+	pub fn get_maths(&self) -> &[MathInfo] {
+		&self.maths
+	}
+
+	#[must_use]
 	pub fn get_separators(&self) -> &[SeparatorInfo] {
 		&self.separators
 	}
@@ -146,6 +152,7 @@ impl HtmlToText {
 		self.images.clear();
 		self.figures.clear();
 		self.tables.clear();
+		self.maths.clear();
 		self.separators.clear();
 		self.lists.clear();
 		self.list_items.clear();
@@ -178,6 +185,9 @@ impl ConverterOutput for HtmlToText {
 	}
 	fn get_tables(&self) -> &[TableInfo] {
 		&self.tables
+	}
+	fn get_maths(&self) -> &[MathInfo] {
+		&self.maths
 	}
 	fn get_separators(&self) -> &[SeparatorInfo] {
 		&self.separators

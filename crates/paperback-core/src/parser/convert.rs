@@ -7,6 +7,7 @@ pub(crate) mod block_elements;
 mod format_spans;
 mod line_builder;
 mod list_style;
+mod math;
 
 pub mod html_to_text;
 pub mod table_text;

@@ -1,4 +1,4 @@
-use scraper::{Html, Node};
+use scraper::{ElementRef, Html, Node};
 
 use crate::util::text::{collapse_whitespace, display_len, trim_string};
 
@@ -214,6 +214,12 @@ pub(crate) fn collect_dom_text(node: ego_tree::NodeRef<'_, Node>, buffer: &mut S
 	match node.value() {
 		Node::Text(text) => buffer.push_str(&text.text),
 		Node::Element(element) => {
+			if element.name() == "math" {
+				if let Some(text) = ElementRef::wrap(node).and_then(super::math::dom_math_text) {
+					buffer.push_str(&text);
+				}
+				return;
+			}
 			if br_as_space && element.name() == "br" {
 				buffer.push(' ');
 			}

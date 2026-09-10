@@ -12,10 +12,11 @@ use crate::{
 		format_spans::FormatKind,
 		line_builder::LineBuilder,
 		list_style::ListStyle,
+		math::dom_math_text,
 		table_text::{collect_dom_text, table_render_bundle},
 	},
 	t,
-	types::{HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, SeparatorInfo, TableInfo},
+	types::{HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, MathInfo, SeparatorInfo, TableInfo},
 	util::text::{collapse_whitespace, display_len, format_list_item, remove_soft_hyphens, trim_string},
 };
 
@@ -33,6 +34,12 @@ impl HtmlToText {
 		match node.value() {
 			Node::Element(element) => {
 				let tag_name = element.name();
+				if tag_name == "math" {
+					if self.flags.contains(ProcessingFlags::IN_BODY) {
+						self.handle_math(node, document);
+					}
+					return;
+				}
 				if tag_name == "table" {
 					if self.flags.contains(ProcessingFlags::IN_BODY)
 						&& let Some(id) = element.attr("id").or_else(|| element.attr("name"))
@@ -62,6 +69,39 @@ impl HtmlToText {
 				}
 			}
 		}
+	}
+
+	fn handle_math(&mut self, node: NodeRef<'_, Node>, document: &Html) {
+		let Some(element) = ElementRef::wrap(node) else { return };
+		let Some(rendered) = dom_math_text(element) else { return };
+		let in_link = self.flags.contains(ProcessingFlags::IN_LINK);
+		let block = element.attr("display") == Some("block") && !in_link;
+		if block {
+			self.text.finalize_current_line();
+		}
+		let offset = if in_link {
+			self.link_start_pos + display_len(&collapse_whitespace(&self.current_link_text))
+		} else {
+			self.text.get_current_text_position()
+		};
+		// Descendant ids also need an anchor because this subtree is not traversed again.
+		for descendant in node.descendants() {
+			if let Node::Element(element) = descendant.value()
+				&& let Some(id) = element.attr("id").or_else(|| element.attr("name"))
+			{
+				self.id_positions.insert(id.to_string(), offset);
+			}
+		}
+		let length = display_len(&rendered);
+		if in_link {
+			self.current_link_text.push_str(&rendered);
+		} else {
+			self.text.current_line.push_str(&rendered);
+		}
+		if block {
+			self.text.finalize_current_line();
+		}
+		self.maths.push(MathInfo { offset, text: rendered, mathml: Self::serialize_node(node, document), length });
 	}
 
 	fn handle_table(&mut self, node: NodeRef<'_, Node>, document: &Html) {

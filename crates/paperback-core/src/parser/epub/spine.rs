@@ -20,7 +20,7 @@ use crate::{
 		},
 	},
 	t,
-	types::{FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, SeparatorInfo, TableInfo},
+	types::{FormatInfo, HeadingInfo, ImageInfo, LinkInfo, ListInfo, ListItemInfo, MathInfo, SeparatorInfo, TableInfo},
 	util::zip::read_zip_entry_by_name,
 };
 
@@ -31,6 +31,7 @@ struct SectionContent {
 	images: Vec<ImageInfo>,
 	figures: Vec<ImageInfo>,
 	tables: Vec<TableInfo>,
+	maths: Vec<MathInfo>,
 	separators: Vec<SeparatorInfo>,
 	lists: Vec<ListInfo>,
 	list_items: Vec<ListItemInfo>,
@@ -55,6 +56,9 @@ impl ConverterOutput for SectionContent {
 	}
 	fn get_tables(&self) -> &[TableInfo] {
 		&self.tables
+	}
+	fn get_maths(&self) -> &[MathInfo] {
+		&self.maths
 	}
 	fn get_separators(&self) -> &[SeparatorInfo] {
 		&self.separators
@@ -178,6 +182,7 @@ fn convert_section(content: &str, render_tables_inline: bool) -> Result<SectionC
 			images: xml_converter.get_images().to_vec(),
 			figures: xml_converter.get_figures().to_vec(),
 			tables: xml_converter.get_tables().to_vec(),
+			maths: xml_converter.get_maths().to_vec(),
 			separators: xml_converter.get_separators().to_vec(),
 			lists: xml_converter.get_lists().to_vec(),
 			list_items: xml_converter.get_list_items().to_vec(),
@@ -197,6 +202,7 @@ fn convert_section(content: &str, render_tables_inline: bool) -> Result<SectionC
 			images: html_converter.get_images().to_vec(),
 			figures: html_converter.get_figures().to_vec(),
 			tables: html_converter.get_tables().to_vec(),
+			maths: html_converter.get_maths().to_vec(),
 			separators: html_converter.get_separators().to_vec(),
 			lists: html_converter.get_lists().to_vec(),
 			list_items: html_converter.get_list_items().to_vec(),
