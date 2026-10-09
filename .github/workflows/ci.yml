@@ -297,6 +297,29 @@ jobs:
         run: |
           $env:PATH = "$env:PATH;${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin;${{ steps.msys2.outputs.msys2-location }}\usr\bin"
           cargo test --workspace --test opens_document --test status_bar --test restores_last_document --test heading_announcements -- --ignored
+  # The core counts display positions in Unicode scalars off Windows and macOS (GTK, Android,
+  # iOS), so its tests take a different path here than in the Windows and macOS jobs. No
+  # wxWidgets is involved: paperback-core builds on its own.
+  test-linux-core:
+    name: Core tests (Linux)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Writing the cache takes about five minutes. Only master writes one; a pull request
+          # restores it and skips the write, which is the slowest step in several of these jobs.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Run tests
+        run: cargo test -p paperback-core
   test-macos:
     name: Tests (macOS)
     needs: changes

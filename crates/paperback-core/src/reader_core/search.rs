@@ -1,10 +1,13 @@
-//! Plain-text and regex search over the rendered document, with UTF-16 offset conversion
-//! (display positions are UTF-16 code units) and wrap-around retry.
+//! Plain-text and regex search over the rendered document, with display-unit offset conversion
+//! (see [`crate::util::text::display_len`]) and wrap-around retry.
 
 use bitflags::bitflags;
 use regex::{Regex, RegexBuilder};
 
-use crate::types as ffi;
+use crate::{
+	types as ffi,
+	util::text::{ch_width, display_len},
+};
 
 bitflags! {
 	#[derive(Copy, Clone)]
@@ -16,48 +19,47 @@ bitflags! {
 	}
 }
 
-fn utf16_to_byte_index(s: &str, utf16_idx: usize) -> usize {
-	let mut utf16_count = 0usize;
+fn display_to_byte_index(s: &str, display_idx: usize) -> usize {
+	let mut display_count = 0usize;
 	for (byte_idx, ch) in s.char_indices() {
-		let len16 = ch.len_utf16();
-		if utf16_count >= utf16_idx {
+		if display_count >= display_idx {
 			return byte_idx;
 		}
-		utf16_count += len16;
+		display_count += ch_width(ch);
 	}
 	s.len()
 }
 
-fn byte_to_utf16_index(s: &str, byte_idx: usize) -> usize {
-	let mut utf16_count = 0usize;
+fn byte_to_display_index(s: &str, byte_idx: usize) -> usize {
+	let mut display_count = 0usize;
 	for (idx, ch) in s.char_indices() {
 		if idx >= byte_idx {
 			break;
 		}
-		utf16_count += ch.len_utf16();
+		display_count += ch_width(ch);
 	}
-	utf16_count
+	display_count
 }
 
-/// The UTF-16 index of each byte offset in `sorted_byte_offsets` (which must be ascending),
+/// The display-unit index of each byte offset in `sorted_byte_offsets` (which must be ascending),
 /// computed in a single forward pass so converting many offsets stays linear in the text length
 /// plus the number of offsets rather than quadratic.
-fn utf16_offsets_at(s: &str, sorted_byte_offsets: &[usize]) -> Vec<usize> {
+fn display_offsets_at(s: &str, sorted_byte_offsets: &[usize]) -> Vec<usize> {
 	let mut out = Vec::with_capacity(sorted_byte_offsets.len());
 	let mut chars = s.char_indices();
 	let mut byte_cursor = 0usize;
-	let mut utf16_cursor = 0usize;
+	let mut display_cursor = 0usize;
 	for &target in sorted_byte_offsets {
 		while byte_cursor < target {
 			if let Some((byte, ch)) = chars.next() {
 				byte_cursor = byte + ch.len_utf8();
-				utf16_cursor += ch.len_utf16();
+				display_cursor += ch_width(ch);
 			} else {
 				byte_cursor = s.len();
 				break;
 			}
 		}
-		out.push(utf16_cursor);
+		out.push(display_cursor);
 	}
 	out
 }
@@ -82,8 +84,8 @@ pub fn reader_search(haystack: &str, needle: &str, start: i64, options: SearchOp
 	if needle.is_empty() {
 		return -1;
 	}
-	let start_utf16 = usize::try_from(start.clamp(0, i64::MAX)).unwrap_or(0);
-	let start_byte = utf16_to_byte_index(haystack, start_utf16);
+	let start_display = usize::try_from(start.clamp(0, i64::MAX)).unwrap_or(0);
+	let start_byte = display_to_byte_index(haystack, start_display);
 	// Build regex for search - this avoids copying/lowercasing the entire haystack.
 	let Some(re) = build_matcher(needle, options) else {
 		return -1;
@@ -91,8 +93,8 @@ pub fn reader_search(haystack: &str, needle: &str, start: i64, options: SearchOp
 	if options.contains(SearchOptions::FORWARD) {
 		if let Some(m) = re.find(&haystack[start_byte..]) {
 			let byte_pos = start_byte + m.start();
-			let utf16_pos = byte_to_utf16_index(haystack, byte_pos);
-			return i64::try_from(utf16_pos).unwrap_or(-1);
+			let display_pos = byte_to_display_index(haystack, byte_pos);
+			return i64::try_from(display_pos).unwrap_or(-1);
 		}
 	} else {
 		let mut last: Option<usize> = None;
@@ -101,14 +103,14 @@ pub fn reader_search(haystack: &str, needle: &str, start: i64, options: SearchOp
 			last = Some(m.start());
 		}
 		if let Some(pos) = last {
-			let utf16_pos = byte_to_utf16_index(haystack, pos);
-			return i64::try_from(utf16_pos).unwrap_or(-1);
+			let display_pos = byte_to_display_index(haystack, pos);
+			return i64::try_from(display_pos).unwrap_or(-1);
 		}
 	}
 	-1
 }
 
-/// Every match of `needle` in `haystack`, as UTF-16 `(start, end)` spans in document order.
+/// Every match of `needle` in `haystack`, as display-unit `(start, end)` spans in document order.
 /// Direction and wrap have no meaning here. Zero-length matches (e.g. an empty `x*` regex match)
 /// are skipped; an empty needle or an invalid regex yields no spans.
 #[must_use]
@@ -120,7 +122,7 @@ pub fn reader_search_all(haystack: &str, needle: &str, options: SearchOptions) -
 		return Vec::new();
 	};
 	// Collect raw byte ranges first (matches come back ordered and non-overlapping), then convert
-	// every boundary to UTF-16 in one forward pass - converting each one separately would rescan
+	// every boundary to display units in one forward pass - converting each one separately would rescan
 	// the whole text per match and be quadratic for documents with many occurrences.
 	let mut byte_ranges: Vec<(usize, usize)> = Vec::new();
 	for m in re.find_iter(haystack) {
@@ -136,13 +138,13 @@ pub fn reader_search_all(haystack: &str, needle: &str, options: SearchOptions) -
 		targets.push(*start);
 		targets.push(*end);
 	}
-	let utf16 = utf16_offsets_at(haystack, &targets);
+	let display = display_offsets_at(haystack, &targets);
 	byte_ranges
 		.into_iter()
 		.enumerate()
 		.map(|(index, _)| {
-			let start = i64::try_from(utf16[index * 2]).unwrap_or(-1);
-			let end = i64::try_from(utf16[index * 2 + 1]).unwrap_or(-1);
+			let start = i64::try_from(display[index * 2]).unwrap_or(-1);
+			let end = i64::try_from(display[index * 2 + 1]).unwrap_or(-1);
 			(start, end)
 		})
 		.collect()
@@ -154,11 +156,8 @@ pub fn reader_search_with_wrap(haystack: &str, needle: &str, start: i64, options
 	if position >= 0 {
 		return ffi::SearchResult { found: true, wrapped: false, position };
 	}
-	let wrap_pos = if options.contains(SearchOptions::FORWARD) {
-		0
-	} else {
-		i64::try_from(haystack.encode_utf16().count()).unwrap_or(0)
-	};
+	let wrap_pos =
+		if options.contains(SearchOptions::FORWARD) { 0 } else { i64::try_from(display_len(haystack)).unwrap_or(0) };
 	let wrapped_position = reader_search(haystack, needle, wrap_pos, options);
 	if wrapped_position >= 0 {
 		return ffi::SearchResult { found: true, wrapped: true, position: wrapped_position };
@@ -181,10 +180,49 @@ mod tests {
 	}
 
 	#[test]
-	fn reader_search_handles_utf16_offsets() {
+	fn reader_search_returns_display_offsets() {
 		let haystack = "a😀b";
 		let options = SearchOptions::FORWARD;
-		assert_eq!(reader_search(haystack, "b", 0, options), 3);
+		let expected = i64::try_from(display_len("a😀")).unwrap();
+		assert_eq!(reader_search(haystack, "b", 0, options), expected);
+	}
+
+	#[test]
+	fn reader_search_starts_from_a_display_offset() {
+		let haystack = "😀b😀b";
+		let options = SearchOptions::FORWARD;
+		let start = i64::try_from(display_len("😀b")).unwrap();
+		assert_eq!(reader_search(haystack, "b", start, options), i64::try_from(display_len("😀b😀")).unwrap());
+	}
+
+	#[test]
+	fn reader_search_with_wrap_backward_starts_from_the_display_end() {
+		let haystack = "😀😀a";
+		let result = reader_search_with_wrap(haystack, "a", 0, SearchOptions::empty());
+		assert!(result.found);
+		assert!(result.wrapped);
+		assert_eq!(result.position, i64::try_from(display_len("😀😀")).unwrap());
+	}
+
+	#[test]
+	fn reader_search_all_returns_display_spans() {
+		let haystack = "😀ab 😀ab";
+		let spans = reader_search_all(haystack, "ab", SearchOptions::empty());
+		let first = i64::try_from(display_len("😀")).unwrap();
+		let second = i64::try_from(display_len("😀ab 😀")).unwrap();
+		assert_eq!(spans, vec![(first, first + 2), (second, second + 2)]);
+	}
+
+	#[cfg(not(any(windows, target_os = "macos")))]
+	#[test]
+	fn reader_search_counts_scalars_off_windows_and_macos() {
+		assert_eq!(reader_search("a😀b", "b", 0, SearchOptions::FORWARD), 2);
+	}
+
+	#[cfg(any(windows, target_os = "macos"))]
+	#[test]
+	fn reader_search_counts_utf16_units_on_windows_and_macos() {
+		assert_eq!(reader_search("a😀b", "b", 0, SearchOptions::FORWARD), 3);
 	}
 
 	#[test]
@@ -252,7 +290,7 @@ mod tests {
 		let spans = reader_search_all(haystack, "blah", options);
 		assert_eq!(spans.len(), 3);
 		assert_eq!(spans[0].0, 0);
-		// "blah" is four ASCII chars, so every span is four UTF-16 units long.
+		// "blah" is four ASCII chars, so every span is four display units long.
 		assert!(spans.iter().all(|(start, end)| end - start == 4));
 		assert!(spans.windows(2).all(|w| w[0].0 < w[1].0));
 	}

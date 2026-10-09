@@ -1,7 +1,19 @@
 //! Locating and replacing the image-only page placeholders the PDF parser leaves behind.
 
 use super::*;
-use crate::ocr::image_only_placeholder;
+use crate::{ocr::image_only_placeholder, util::text::display_len};
+
+/// The placeholder line's length in display units. Its wording differs between platforms that
+/// have an OCR engine and ones that do not, so offsets after it are derived rather than written out.
+fn placeholder_len() -> i64 {
+	i64::try_from(display_len(&image_only_placeholder())).unwrap()
+}
+
+/// Where "page three" starts in [`session_with_image_only_page`]: after "page one\n", the
+/// placeholder and its newline.
+fn page_three_offset() -> i64 {
+	9 + placeholder_len() + 1
+}
 
 /// Two pages of text with an image-only page between them, shaped the way the PDF parser builds
 /// one: a page break at the start of each page, and an `ImageOnlyPage` marker sharing the
@@ -12,7 +24,7 @@ fn session_with_image_only_page() -> DocumentSession {
 	buffer.add_marker(Marker::new(MarkerType::PageBreak, 0));
 	buffer.add_marker(Marker::new(MarkerType::PageBreak, 9));
 	buffer.add_marker(Marker::new(MarkerType::ImageOnlyPage, 9));
-	buffer.add_marker(Marker::new(MarkerType::PageBreak, 43));
+	buffer.add_marker(Marker::new(MarkerType::PageBreak, usize::try_from(page_three_offset()).unwrap()));
 	session_from_buffer(buffer)
 }
 
@@ -40,10 +52,10 @@ fn image_only_page_at_matches_anywhere_on_the_placeholder_line() {
 	assert_eq!(session.image_only_page_at(9), Some(9));
 	// Mid-line and at the line's end, since the caret can sit anywhere on it.
 	assert_eq!(session.image_only_page_at(20), Some(9));
-	assert_eq!(session.image_only_page_at(42), Some(9));
+	assert_eq!(session.image_only_page_at(9 + placeholder_len()), Some(9));
 	// The lines either side are ordinary text.
 	assert_eq!(session.image_only_page_at(0), None);
-	assert_eq!(session.image_only_page_at(45), None);
+	assert_eq!(session.image_only_page_at(page_three_offset() + 2), None);
 }
 
 #[test]
@@ -55,8 +67,8 @@ fn replace_image_only_pages_swaps_the_line_and_clears_the_marker() {
 	assert!(session.image_only_pages().is_empty());
 	assert_eq!(session.image_only_page_at(9), None);
 	// The page after it moved by the length difference, and page navigation follows.
-	assert_eq!(outcome.total_delta, 15 - 33);
-	assert_eq!(session.page_offset(3), 43 + outcome.total_delta);
+	assert_eq!(outcome.total_delta, 15 - placeholder_len());
+	assert_eq!(session.page_offset(3), page_three_offset() + outcome.total_delta);
 	assert_eq!(session.line_text_at(session.page_offset(3)), "page three");
 }
 
@@ -179,7 +191,7 @@ fn replace_ocr_pages_still_takes_the_placeholder_path_for_an_image_only_page() {
 	let mut session = session_with_image_only_page();
 	let outcome = session.replace_ocr_pages(&[(2, "recognized".to_string())]);
 	assert_eq!(session.line_text_at(9), "recognized");
-	assert_eq!(outcome.total_delta, 10 - 33);
+	assert_eq!(outcome.total_delta, 10 - placeholder_len());
 	// The placeholder line was replaced, not the whole page span, so the newline that ends it is
 	// still the one the placeholder line already had. Had the replacement wrongly carried a
 	// newline of its own, a blank line would now sit between the two.

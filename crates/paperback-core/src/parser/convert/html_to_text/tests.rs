@@ -251,7 +251,7 @@ fn html_table_display_length_is_display_extent_not_byte_length() {
 	assert_eq!(tables.len(), 1, "expected exactly one table");
 	let table = &tables[0];
 	assert_eq!(table.offset, 6, "table starts after 'Intro\n'");
-	assert_eq!(table.length, 5, "length must be the display extent (5 display units), not byte length (6)");
+	assert_eq!(table.length, display_len("A\t\u{1D11E}\n"), "length must be the display extent, not byte length");
 }
 
 #[test]
