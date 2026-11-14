@@ -1,4 +1,4 @@
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use paperback_core::config::KeyChord;
 use paperback_core::config::{ActionId, ConfigManager};
 use wxdragon::prelude::*;
@@ -126,6 +126,15 @@ pub fn format_menu_label(base: &str, action: ActionId, config: &ConfigManager) -
 	#[cfg(target_os = "windows")]
 	let shortcut = if KeyChord::parse(&shortcut).is_some_and(|chord| super::is_punctuation_chord(&chord)) {
 		format!("{shortcut}\u{a0}")
+	} else {
+		shortcut
+	};
+	// Cocoa uses the first menu item matching Cmd+V, so an item before Edit > Paste
+	// would intercept pasting into dialog text fields. Omit its menu shortcut;
+	// `mac_shortcuts` handles Cmd+V in the main window.
+	#[cfg(target_os = "macos")]
+	let shortcut = if config.get_shortcut_chord(action) == Some(KeyChord::new(true, false, false, "V")) {
+		String::new()
 	} else {
 		shortcut
 	};
