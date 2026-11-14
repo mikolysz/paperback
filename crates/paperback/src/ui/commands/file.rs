@@ -37,9 +37,18 @@ pub fn open(ctx: &Ctx) {
 	// Windows hands back a multiple selection in no useful order, often the last file clicked first, so the tabs follow the folder instead.
 	let mut paths = dialog.get_paths();
 	paths.sort();
+	if open_paths(ctx, &paths) {
+		ctx.dm.lock().unwrap().focus_document_text();
+	}
+}
+
+/// Opens the paths and returns whether any document opened successfully.
+/// The caller sets focus and announces the document unless a dialog just closed,
+/// which already triggers a screen reader announcement.
+fn open_paths(ctx: &Ctx, paths: &[impl AsRef<Path>]) -> bool {
 	let mut opened_any = false;
-	for path in &paths {
-		let Some(path) = resolve_zip_path(ctx.frame, Path::new(path), ctx.config, false) else {
+	for path in paths {
+		let Some(path) = resolve_zip_path(ctx.frame, path.as_ref(), ctx.config, false) else {
 			continue;
 		};
 		// One book that cannot be opened, or whose unknown type the reader declines to pick a reader for, does not stop the rest.
@@ -48,21 +57,12 @@ pub fn open(ctx: &Ctx) {
 			opened_any = true;
 		}
 	}
-	if !opened_any {
-		return;
+	if opened_any {
+		update_title_from_manager(ctx.frame, &ctx.dm.lock().unwrap());
+		// Disable Reopen Last Closed if no documents have been closed yet.
+		rebuild_menu_bar(ctx.frame, ctx.dm, ctx.config);
 	}
-	let Ok(dm_ref) = ctx.dm.try_lock() else {
-		return;
-	};
-	update_title_from_manager(ctx.frame, &dm_ref);
-	dm_ref.focus_document_text();
-	drop(dm_ref);
-	let menu_bar = menu::create_menu_bar(&ctx.config.lock().unwrap());
-	ctx.frame.set_menu_bar(menu_bar);
-	menu::update_menu_item_states(ctx.frame, true);
-	// A rebuilt menu bar has every item enabled; skipping this left Reopen Last Closed enabled and inert after a fresh-start open.
-	let has_reopen = ctx.dm.lock().unwrap().has_recently_closed();
-	menu::update_reopen_state(ctx.frame, has_reopen);
+	opened_any
 }
 
 pub fn open_from_url(ctx: &Ctx) {
